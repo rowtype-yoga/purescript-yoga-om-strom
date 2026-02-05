@@ -5,7 +5,7 @@ workspace:
 package:
   name: yoga-om-strom
   publish:
-    version: 0.1.0
+    version: 0.1.1
     license: MIT-0
     exclude:
       - "src/**/*.test.purs"
