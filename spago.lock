@@ -14,6 +14,7 @@
             {
               "avar": ">=5.0.0 <6.0.0"
             },
+            "catenable-lists",
             {
               "console": ">=6.1.0 <7.0.0"
             },
@@ -35,6 +36,7 @@
             {
               "foldable-traversable": ">=6.0.0 <7.0.0"
             },
+            "integers",
             {
               "lists": ">=7.0.0 <8.0.0"
             },
@@ -42,16 +44,7 @@
               "maybe": ">=6.0.0 <7.0.0"
             },
             {
-              "minibench": ">=4.0.1 <5.0.0"
-            },
-            {
-              "newtype": ">=5.0.0 <6.0.0"
-            },
-            {
               "now": ">=6.0.0 <7.0.0"
-            },
-            {
-              "partial": ">=4.0.0 <5.0.0"
             },
             {
               "prelude": ">=6.0.1 <7.0.0"
@@ -62,11 +55,11 @@
             {
               "spec": ">=7.6.0 <8.0.0"
             },
+            "st",
+            "tailrec",
+            "transformers",
             {
               "tuples": ">=7.0.0 <8.0.0"
-            },
-            {
-              "typelevel-prelude": ">=7.0.0 <8.0.0"
             },
             {
               "variant": ">=8.0.0 <9.0.0"
@@ -106,7 +99,6 @@
             "lazy",
             "lists",
             "maybe",
-            "minibench",
             "mmorph",
             "newtype",
             "nonempty",
@@ -602,19 +594,6 @@
         "invariant",
         "newtype",
         "prelude"
-      ]
-    },
-    "minibench": {
-      "type": "registry",
-      "version": "4.0.1",
-      "integrity": "sha256-zd/YnOqnzz/ers1umv5rgJOyPntF2zFpcLVbPWQIbYU=",
-      "dependencies": [
-        "console",
-        "effect",
-        "integers",
-        "numbers",
-        "prelude",
-        "refs"
       ]
     },
     "mmorph": {

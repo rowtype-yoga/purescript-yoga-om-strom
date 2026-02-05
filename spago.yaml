@@ -12,6 +12,11 @@ package:
       githubOwner: rowtype-yoga
       githubRepo: purescript-yoga-om-strom
   dependencies:
+    - catenable-lists
+    - integers
+    - st
+    - tailrec
+    - transformers
     - aff: ">=7.1.0 <8.0.0"
     - arrays: ">=7.3.0 <8.0.0"
     - avar: ">=5.0.0 <6.0.0"
