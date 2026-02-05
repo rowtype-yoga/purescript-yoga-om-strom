@@ -1,0 +1,191 @@
+🚀 Running benchmarks on Node.js v25.2.1
+============================================================
+🔥 Strom Performance Benchmark Suite
+=====================================
+
+
+🏃 map-2M (runs: 10)
+  min:    0.0 ms
+  median: 0.0 ms
+  mean:   0.0 ms
+  max:    0.0 ms
+
+🏃 filter-2M-50pct (runs: 10)
+  min:    0.0 ms
+  median: 0.0 ms
+  mean:   0.0 ms
+  max:    0.0 ms
+
+🏃 map-chain-3x-2M (runs: 10)
+  min:    0.0 ms
+  median: 0.0 ms
+  mean:   0.0 ms
+  max:    0.0 ms
+
+🏃 pipeline-map-filter-map-2M (runs: 10)
+  min:    0.0 ms
+  median: 0.0 ms
+  mean:   0.0 ms
+  max:    0.0 ms
+
+🏃 fold-sum-1M (runs: 10)
+  min:    0.0 ms
+  median: 0.0 ms
+  mean:   0.0 ms
+  max:    0.0 ms
+
+🏃 collect-50k (runs: 10)
+  min:    0.0 ms
+  median: 0.0 ms
+  mean:   0.0 ms
+  max:    0.0 ms
+
+🏃 take-5k-from-2M (runs: 10)
+  min:    0.0 ms
+  median: 0.0 ms
+  mean:   0.0 ms
+  max:    0.0 ms
+
+🏃 mergeND-2x1M-pure (runs: 10)
+  min:    96.0 ms
+  median: 128.0 ms
+  mean:   137.1 ms
+  max:    228.0 ms
+
+🏃 mergeND-2x100-with-delay (runs: 10)
+  min:    118.0 ms
+  median: 176.0 ms
+  mean:   166.5 ms
+  max:    194.0 ms
+
+🏃 mapPar-concurrency4-5k-pure (runs: 10)
+  min:    279.0 ms
+  median: 314.0 ms
+  mean:   346.8 ms
+  max:    500.0 ms
+
+🏃 mapPar-concurrency4-100-with-delay (runs: 10)
+  min:    287.0 ms
+  median: 299.0 ms
+  mean:   303.9 ms
+  max:    334.0 ms
+
+🏃 scan-running-sum-2M (runs: 10)
+  min:    0.0 ms
+  median: 0.0 ms
+  mean:   0.0 ms
+  max:    0.0 ms
+
+🏃 unfold-10k (runs: 10)
+  min:    0.0 ms
+  median: 0.0 ms
+  mean:   0.0 ms
+  max:    0.0 ms
+
+🏃 infinite-iterate-take-10k (runs: 10)
+  min:    1.0 ms
+  median: 2.0 ms
+  mean:   2.1 ms
+  max:    3.0 ms
+
+🏃 bind-5kx10 (runs: 10)
+  min:    0.0 ms
+  median: 0.0 ms
+  mean:   0.0 ms
+  max:    0.0 ms
+
+🏃 zip-2x500k (runs: 10)
+  min:    0.0 ms
+  median: 0.0 ms
+  mean:   0.0 ms
+  max:    0.0 ms
+
+🏃 fromArray-1M (runs: 10)
+  min:    0.0 ms
+  median: 0.0 ms
+  mean:   0.0 ms
+  max:    0.0 ms
+
+🏃 iterateStrom-10k (runs: 10)
+  min:    0.0 ms
+  median: 0.0 ms
+  mean:   0.0 ms
+  max:    0.0 ms
+
+🏃 repeatStrom-10k (runs: 10)
+  min:    0.0 ms
+  median: 0.0 ms
+  mean:   0.0 ms
+  max:    0.0 ms
+
+🏃 mapM-effect-50k (runs: 10)
+  min:    0.0 ms
+  median: 0.0 ms
+  mean:   0.0 ms
+  max:    0.0 ms
+
+🏃 tap-50k (runs: 10)
+  min:    0.0 ms
+  median: 0.0 ms
+  mean:   0.0 ms
+  max:    0.0 ms
+
+🏃 collect-filter-map-50k (runs: 10)
+  min:    0.0 ms
+  median: 0.0 ms
+  mean:   0.0 ms
+  max:    0.0 ms
+
+🏃 changes-50k (runs: 10)
+  min:    0.0 ms
+  median: 0.0 ms
+  mean:   0.0 ms
+  max:    0.0 ms
+
+🏃 takeWhile-50k (runs: 10)
+  min:    0.0 ms
+  median: 0.0 ms
+  mean:   0.0 ms
+  max:    0.0 ms
+
+🏃 drop-5k-from-1M (runs: 10)
+  min:    0.0 ms
+  median: 0.0 ms
+  mean:   0.0 ms
+  max:    0.0 ms
+
+🏃 dropWhile-half-1M (runs: 10)
+  min:    0.0 ms
+  median: 0.0 ms
+  mean:   0.0 ms
+  max:    0.0 ms
+
+🏃 grouped-chunks-of-100-from-50k (runs: 10)
+  min:    0.0 ms
+  median: 0.0 ms
+  mean:   0.1 ms
+  max:    1.0 ms
+
+🏃 partition-even-odd-50k (runs: 10)
+  min:    0.0 ms
+  median: 0.0 ms
+  mean:   0.0 ms
+  max:    0.0 ms
+
+🏃 append-2x500k (runs: 10)
+  min:    0.0 ms
+  median: 0.0 ms
+  mean:   0.0 ms
+  max:    0.0 ms
+
+🏃 concat-10x10k (runs: 10)
+  min:    0.0 ms
+  median: 0.0 ms
+  mean:   0.0 ms
+  max:    0.0 ms
+
+🏃 zipWith-add-2x500k (runs: 10)
+  min:    0.0 ms
+  median: 0.0 ms
+  mean:   0.0 ms
+  max:    0.0 ms

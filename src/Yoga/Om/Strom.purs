@@ -74,16 +74,29 @@ module Yoga.Om.Strom
   , zipWithStrom
   , interleave
   , intersperse
+  , HaltStrategy(..)
   , merge
   , mergeAll
+  , mergeWith
+  , mergeHaltEither
+  , mergeHaltLeft
+  , mergeHaltRight
   , mergeND
+  , mergeNDWith
   , mergeAllND
+  , mergeAllNDWith
   , race
   , raceAll
   -- Parallel Processing
   , mapPar
   , mapMPar
   , foreachPar
+  , mapParUnordered
+  , mapMParUnordered
+  , foreachParUnordered
+  -- Buffering
+  , buffer
+  , bufferChunks
   -- Error Handling
   , catchAll
   -- , catchSome -- TODO: Fix type constraints
@@ -115,7 +128,7 @@ import Data.Functor (map) as Functor
 import Data.List as List
 import Data.Maybe (Maybe(..))
 import Data.Time.Duration (Milliseconds(..))
-import Data.Traversable (traverse)
+import Data.Traversable (traverse, traverse_)
 import Data.Tuple (Tuple(..))
 import Data.Variant (Variant)
 import Effect.Aff (Aff, Error, delay, forkAff, joinFiber, killFiber)
@@ -123,7 +136,10 @@ import Effect.Aff.AVar as AVar
 import Effect.Aff.Class (liftAff)
 import Effect.Exception as Exception
 import Effect.Now (now)
+import Effect.Ref as Ref
 import Effect.Class (liftEffect)
+import Data.CatQueue as CatQueue
+import Data.CatQueue (CatQueue)
 import Data.DateTime.Instant (unInstant)
 import Yoga.Om (Om)
 import Yoga.Om as Om
@@ -174,6 +190,29 @@ data QueueItem a
   | StreamDone StreamId
 
 derive instance functorQueueItem :: Functor QueueItem
+
+-- | Messages for mergeAllND buffered queue
+data MergeAllItem a
+  = MergeChunk (Array a)
+  | MergeDone
+
+derive instance functorMergeAllItem :: Functor MergeAllItem
+
+-- | Merge termination strategy (like ZStream HaltStrategy)
+data HaltStrategy
+  = HaltBoth
+  | HaltEither
+  | HaltLeft
+  | HaltRight
+
+derive instance eqHaltStrategy :: Eq HaltStrategy
+
+-- | Messages for buffering queues
+data BufferItem a
+  = BufferChunk (Array a)
+  | BufferDone
+
+derive instance functorBufferItem :: Functor BufferItem
 
 --------------------------------------------------------------------------------
 -- Construction
@@ -1098,40 +1137,186 @@ intersperse separator stream = intersperseHelper true stream
             pure $ Loop $ Tuple (Just withSeparators) (intersperseHelper false next)
 
 --------------------------------------------------------------------------------
+-- Buffering
+--------------------------------------------------------------------------------
+
+-- | Buffer stream chunks with backpressure (preserves chunking)
+bufferChunks :: forall ctx err a. Int -> Strom ctx err a -> Strom ctx err a
+bufferChunks capacity stream
+  | capacity <= 0 = stream
+  | otherwise = mkStrom do
+      ctx <- Om.ask
+      liftAff do
+        bufferRef <- liftEffect $ Ref.new (CatQueue.empty :: CatQueue (BufferItem a))
+        sizeRef <- liftEffect $ Ref.new 0
+        mutex <- AVar.new unit
+        notEmpty <- AVar.empty
+        notFull <- AVar.new unit
+
+        let
+          enqueue item = do
+            AVar.take notFull
+            AVar.take mutex
+            size <- liftEffect $ Ref.read sizeRef
+            let wasEmpty = size == 0
+            buf <- liftEffect $ Ref.read bufferRef
+            liftEffect $ Ref.write (CatQueue.snoc buf item) bufferRef
+            liftEffect $ Ref.write (size + 1) sizeRef
+            AVar.put unit mutex
+            when wasEmpty $ AVar.put unit notEmpty
+            when (size + 1 < capacity) $ AVar.put unit notFull
+
+          dequeue = do
+            AVar.take notEmpty
+            AVar.take mutex
+            buf <- liftEffect $ Ref.read bufferRef
+            size <- liftEffect $ Ref.read sizeRef
+            case CatQueue.uncons buf of
+              Nothing -> do
+                AVar.put unit mutex
+                dequeue
+              Just (Tuple head tail) -> do
+                liftEffect $ Ref.write tail bufferRef
+                liftEffect $ Ref.write (size - 1) sizeRef
+                let hasMore = (size - 1) > 0
+                let wasFull = size == capacity
+                AVar.put unit mutex
+                when hasMore $ AVar.put unit notEmpty
+                when wasFull $ AVar.put unit notFull
+                pure head
+
+          producer s = do
+            stepResult <- Om.runReader ctx (runStrom s)
+            step <- either (\_ -> throwError (Exception.error "Stream error")) pure stepResult
+            case step of
+              Done Nothing -> enqueue BufferDone
+              Done (Just chunk) -> do
+                enqueue (BufferChunk chunk)
+                enqueue BufferDone
+              Loop (Tuple maybeChunk next) -> do
+                case maybeChunk of
+                  Just chunk -> enqueue (BufferChunk chunk)
+                  Nothing -> pure unit
+                producer next
+
+        fiber <- forkAff (producer stream)
+
+        let
+          consumer = mkStrom $ liftAff do
+            msg <- dequeue
+            case msg of
+              BufferDone -> do
+                killFiber (Exception.error "done") fiber
+                pure $ Done Nothing
+              BufferChunk chunk ->
+                pure $ Loop $ Tuple (Just chunk) consumer
+
+        stepResult <- Om.runReader ctx (runStrom consumer)
+        either (\_ -> throwError (Exception.error "Consumer init error")) pure stepResult
+
+-- | Buffer stream elements with backpressure (destroys chunking)
+buffer :: forall ctx err a. Int -> Strom ctx err a -> Strom ctx err a
+buffer capacity stream
+  | capacity <= 0 = stream
+  | otherwise = mkStrom do
+      ctx <- Om.ask
+      liftAff do
+        bufferRef <- liftEffect $ Ref.new (CatQueue.empty :: CatQueue (BufferItem a))
+        sizeRef <- liftEffect $ Ref.new 0
+        mutex <- AVar.new unit
+        notEmpty <- AVar.empty
+        notFull <- AVar.new unit
+
+        let
+          enqueue item = do
+            AVar.take notFull
+            AVar.take mutex
+            size <- liftEffect $ Ref.read sizeRef
+            let wasEmpty = size == 0
+            buf <- liftEffect $ Ref.read bufferRef
+            liftEffect $ Ref.write (CatQueue.snoc buf item) bufferRef
+            liftEffect $ Ref.write (size + 1) sizeRef
+            AVar.put unit mutex
+            when wasEmpty $ AVar.put unit notEmpty
+            when (size + 1 < capacity) $ AVar.put unit notFull
+
+          dequeue = do
+            AVar.take notEmpty
+            AVar.take mutex
+            buf <- liftEffect $ Ref.read bufferRef
+            size <- liftEffect $ Ref.read sizeRef
+            case CatQueue.uncons buf of
+              Nothing -> do
+                AVar.put unit mutex
+                dequeue
+              Just (Tuple head tail) -> do
+                liftEffect $ Ref.write tail bufferRef
+                liftEffect $ Ref.write (size - 1) sizeRef
+                let hasMore = (size - 1) > 0
+                let wasFull = size == capacity
+                AVar.put unit mutex
+                when hasMore $ AVar.put unit notEmpty
+                when wasFull $ AVar.put unit notFull
+                pure head
+
+          producer s = do
+            stepResult <- Om.runReader ctx (runStrom s)
+            step <- either (\_ -> throwError (Exception.error "Stream error")) pure stepResult
+            case step of
+              Done Nothing -> enqueue BufferDone
+              Done (Just chunk) -> do
+                traverse_ (\a -> enqueue (BufferChunk [ a ])) chunk
+                enqueue BufferDone
+              Loop (Tuple maybeChunk next) -> do
+                case maybeChunk of
+                  Just chunk -> traverse_ (\a -> enqueue (BufferChunk [ a ])) chunk
+                  Nothing -> pure unit
+                producer next
+
+        fiber <- forkAff (producer stream)
+
+        let
+          consumer = mkStrom $ liftAff do
+            msg <- dequeue
+            case msg of
+              BufferDone -> do
+                killFiber (Exception.error "done") fiber
+                pure $ Done Nothing
+              BufferChunk chunk ->
+                pure $ Loop $ Tuple (Just chunk) consumer
+
+        stepResult <- Om.runReader ctx (runStrom consumer)
+        either (\_ -> throwError (Exception.error "Consumer init error")) pure stepResult
+
+--------------------------------------------------------------------------------
 -- Concurrency
 --------------------------------------------------------------------------------
 
--- | Merge two streams concurrently
+-- | Merge two streams concurrently (nondeterministic like ZStream merge)
 -- | Elements are emitted as soon as they're available from either stream
 merge :: forall ctx err a. Strom ctx err a -> Strom ctx err a -> Strom ctx err a
-merge s1 s2 = mkStrom do
-  -- Pull from both streams concurrently
-  step1 <- runStrom s1
-  step2 <- runStrom s2
-  case step1, step2 of
-    Done Nothing, Done Nothing -> pure $ Done Nothing
-    Done Nothing, Done (Just chunk2) -> pure $ Done $ Just chunk2
-    Done (Just chunk1), Done Nothing -> pure $ Done $ Just chunk1
-    Done (Just chunk1), Done (Just chunk2) -> pure $ Done $ Just (chunk1 <> chunk2)
-    Done Nothing, Loop (Tuple maybeChunk2 next2) ->
-      pure $ Loop $ Tuple maybeChunk2 next2
-    Done (Just chunk1), Loop (Tuple maybeChunk2 next2) ->
-      case maybeChunk2 of
-        Nothing -> pure $ Loop $ Tuple (Just chunk1) next2
-        Just chunk2 -> pure $ Loop $ Tuple (Just $ chunk1 <> chunk2) next2
-    Loop (Tuple maybeChunk1 next1), Done Nothing ->
-      pure $ Loop $ Tuple maybeChunk1 next1
-    Loop (Tuple maybeChunk1 next1), Done (Just chunk2) ->
-      case maybeChunk1 of
-        Nothing -> pure $ Loop $ Tuple (Just chunk2) next1
-        Just chunk1 -> pure $ Loop $ Tuple (Just $ chunk1 <> chunk2) next1
-    Loop (Tuple maybeChunk1 next1), Loop (Tuple maybeChunk2 next2) ->
-      -- Both streams continue, merge chunks and continue with both
-      case maybeChunk1, maybeChunk2 of
-        Nothing, Nothing -> pure $ Loop $ Tuple Nothing (merge next1 next2)
-        Just c1, Nothing -> pure $ Loop $ Tuple (Just c1) (merge next1 next2)
-        Nothing, Just c2 -> pure $ Loop $ Tuple (Just c2) (merge next1 next2)
-        Just c1, Just c2 -> pure $ Loop $ Tuple (Just $ c1 <> c2) (merge next1 next2)
+merge = mergeNDWith 1024
+
+-- | Merge with halt strategy and mapping functions (ZStream-like)
+mergeWith
+  :: forall ctx err a b c
+   . HaltStrategy
+  -> (a -> c)
+  -> (b -> c)
+  -> Strom ctx err a
+  -> Strom ctx err b
+  -> Strom ctx err c
+mergeWith strategy f g s1 s2 =
+  mergeNDWithStrategy 1024 strategy (mapStrom f s1) (mapStrom g s2)
+
+mergeHaltEither :: forall ctx err a. Strom ctx err a -> Strom ctx err a -> Strom ctx err a
+mergeHaltEither = mergeNDWithStrategy 1024 HaltEither
+
+mergeHaltLeft :: forall ctx err a. Strom ctx err a -> Strom ctx err a -> Strom ctx err a
+mergeHaltLeft = mergeNDWithStrategy 1024 HaltLeft
+
+mergeHaltRight :: forall ctx err a. Strom ctx err a -> Strom ctx err a -> Strom ctx err a
+mergeHaltRight = mergeNDWithStrategy 1024 HaltRight
 
 -- | Merge multiple streams concurrently
 mergeAll :: forall ctx err a. Array (Strom ctx err a) -> Strom ctx err a
@@ -1140,27 +1325,83 @@ mergeAll streams = Array.foldl merge empty streams
 -- | Race two streams - returns elements from whichever produces first
 -- | Uses Om.race for true concurrent racing
 race :: forall ctx err a. Strom ctx err a -> Strom ctx err a -> Strom ctx err a
-race s1 s2 = mkStrom do
-  Om.race [ runStrom s1, runStrom s2 ]
+race = mergeHaltEither
 
 -- | Race multiple streams - returns elements from whichever produces first
 raceAll :: forall ctx err a. Array (Strom ctx err a) -> Strom ctx err a
-raceAll streams = mkStrom do
-  Om.race (Functor.map runStrom streams)
+raceAll streams =
+  case Array.uncons streams of
+    Nothing -> empty
+    Just { head, tail } -> Array.foldl mergeHaltEither head tail
 
 -- | Non-deterministic merge: Merge two streams concurrently, emitting elements as soon as they're available
 -- | Unlike `merge`, this runs both streams in parallel and elements may arrive in any order
 -- | The stream that produces results faster will have its elements appear first
 -- | Optimized: Spawns producer fibers once and uses a queue for communication
 mergeND :: forall ctx err a. Strom ctx err a -> Strom ctx err a -> Strom ctx err a
-mergeND stream1 stream2 = mkStrom do
+mergeND = mergeNDWith 1024
+
+-- | Non-deterministic merge with configurable buffer capacity (chunk queue)
+mergeNDWith :: forall ctx err a. Int -> Strom ctx err a -> Strom ctx err a -> Strom ctx err a
+mergeNDWith bufferCapacity = mergeNDWithStrategy bufferCapacity HaltBoth
+
+mergeNDWithStrategy
+  :: forall ctx err a
+   . Int
+  -> HaltStrategy
+  -> Strom ctx err a
+  -> Strom ctx err a
+  -> Strom ctx err a
+mergeNDWithStrategy bufferCapacity strategy stream1 stream2 = mkStrom do
   -- Capture context
   ctx <- Om.ask
-  
+
   liftAff do
-    -- Create communication queue
-    queue <- AVar.empty
-    
+    -- Create buffered queue with backpressure
+    bufferRef <- liftEffect $ Ref.new (CatQueue.empty :: CatQueue (QueueItem a))
+    sizeRef <- liftEffect $ Ref.new 0
+    mutex <- AVar.new unit
+    notEmpty <- AVar.empty
+    notFull <- AVar.new unit
+
+    let
+      shouldStop doneLeft doneRight =
+        case strategy of
+          HaltBoth -> doneLeft && doneRight
+          HaltEither -> doneLeft || doneRight
+          HaltLeft -> doneLeft
+          HaltRight -> doneRight
+      enqueue item = do
+        AVar.take notFull
+        AVar.take mutex
+        size <- liftEffect $ Ref.read sizeRef
+        let wasEmpty = size == 0
+        buf <- liftEffect $ Ref.read bufferRef
+        liftEffect $ Ref.write (CatQueue.snoc buf item) bufferRef
+        liftEffect $ Ref.write (size + 1) sizeRef
+        AVar.put unit mutex
+        when wasEmpty $ AVar.put unit notEmpty
+        when (size + 1 < bufferCapacity) $ AVar.put unit notFull
+
+      dequeue = do
+        AVar.take notEmpty
+        AVar.take mutex
+        buf <- liftEffect $ Ref.read bufferRef
+        size <- liftEffect $ Ref.read sizeRef
+        case CatQueue.uncons buf of
+          Nothing -> do
+            AVar.put unit mutex
+            dequeue
+          Just (Tuple head tail) -> do
+            liftEffect $ Ref.write tail bufferRef
+            liftEffect $ Ref.write (size - 1) sizeRef
+            let hasMore = (size - 1) > 0
+            let wasFull = size == bufferCapacity
+            AVar.put unit mutex
+            when hasMore $ AVar.put unit notEmpty
+            when wasFull $ AVar.put unit notFull
+            pure head
+
     -- Spawn producer fiber for stream1
     fiber1 <- forkAff do
       let
@@ -1168,18 +1409,18 @@ mergeND stream1 stream2 = mkStrom do
           stepResult <- Om.runReader ctx (runStrom s)
           step <- either (\e -> throwError (Exception.error "Stream error")) pure stepResult
           case step of
-            Done Nothing -> 
-              AVar.put (Left StreamId1) queue -- Signal stream1 done
+            Done Nothing ->
+              enqueue (StreamDone StreamId1)
             Done (Just chunk) -> do
-              AVar.put (Right chunk) queue -- Emit final chunk
-              AVar.put (Left StreamId1) queue -- Signal stream1 done
+              enqueue (DataChunk chunk StreamId1)
+              enqueue (StreamDone StreamId1)
             Loop (Tuple maybeChunk next) -> do
               case maybeChunk of
-                Just chunk -> AVar.put (Right chunk) queue
+                Just chunk -> enqueue (DataChunk chunk StreamId1)
                 Nothing -> pure unit
               producer next
       producer stream1
-    
+
     -- Spawn producer fiber for stream2
     fiber2 <- forkAff do
       let
@@ -1187,44 +1428,126 @@ mergeND stream1 stream2 = mkStrom do
           stepResult <- Om.runReader ctx (runStrom s)
           step <- either (\e -> throwError (Exception.error "Stream error")) pure stepResult
           case step of
-            Done Nothing -> 
-              AVar.put (Left StreamId2) queue -- Signal stream2 done
+            Done Nothing ->
+              enqueue (StreamDone StreamId2)
             Done (Just chunk) -> do
-              AVar.put (Right chunk) queue -- Emit final chunk
-              AVar.put (Left StreamId2) queue -- Signal stream2 done
+              enqueue (DataChunk chunk StreamId2)
+              enqueue (StreamDone StreamId2)
             Loop (Tuple maybeChunk next) -> do
               case maybeChunk of
-                Just chunk -> AVar.put (Right chunk) queue
+                Just chunk -> enqueue (DataChunk chunk StreamId2)
                 Nothing -> pure unit
               producer next
       producer stream2
-    
+
     -- Consumer: pull from queue
     let
-      consumer doneCount = mkStrom $ liftAff do
-        if doneCount >= 2 then do
+      consumer doneLeft doneRight = mkStrom $ liftAff do
+        if shouldStop doneLeft doneRight then do
           -- Both streams done, cleanup
           killFiber (Exception.error "done") fiber1
           killFiber (Exception.error "done") fiber2
           pure $ Done Nothing
         else do
-          msg <- AVar.take queue
+          msg <- dequeue
           case msg of
-            Left _streamId -> do
+            StreamDone streamId -> do
               -- One stream finished, recurse
-              stepResult <- Om.runReader ctx (runStrom $ consumer (doneCount + 1))
+              let
+                doneLeft' = doneLeft || streamId == StreamId1
+                doneRight' = doneRight || streamId == StreamId2
+              stepResult <- Om.runReader ctx (runStrom $ consumer doneLeft' doneRight')
               either (\_ -> throwError (Exception.error "Consumer error")) pure stepResult
-            Right chunk -> 
+            DataChunk chunk _streamId ->
               -- Got a chunk
-              pure $ Loop $ Tuple (Just chunk) (consumer doneCount)
-    
-    stepResult <- Om.runReader ctx (runStrom $ consumer 0)
+              pure $ Loop $ Tuple (Just chunk) (consumer doneLeft doneRight)
+
+    stepResult <- Om.runReader ctx (runStrom $ consumer false false)
     either (\_ -> throwError (Exception.error "Consumer init error")) pure stepResult
 
 -- | Non-deterministic merge of multiple streams
 -- | All streams run concurrently and emit elements as soon as they're available
 mergeAllND :: forall ctx err a. Array (Strom ctx err a) -> Strom ctx err a
-mergeAllND streams = Array.foldl mergeND empty streams
+mergeAllND = mergeAllNDWith 1024
+
+-- | Non-deterministic merge of multiple streams with configurable buffer capacity
+mergeAllNDWith :: forall ctx err a. Int -> Array (Strom ctx err a) -> Strom ctx err a
+mergeAllNDWith bufferCapacity streams
+  | Array.null streams = empty
+  | otherwise = mkStrom do
+      ctx <- Om.ask
+      liftAff do
+        bufferRef <- liftEffect $ Ref.new (CatQueue.empty :: CatQueue (MergeAllItem a))
+        sizeRef <- liftEffect $ Ref.new 0
+        mutex <- AVar.new unit
+        notEmpty <- AVar.empty
+        notFull <- AVar.new unit
+
+        let
+          enqueue item = do
+            AVar.take notFull
+            AVar.take mutex
+            size <- liftEffect $ Ref.read sizeRef
+            let wasEmpty = size == 0
+            buf <- liftEffect $ Ref.read bufferRef
+            liftEffect $ Ref.write (CatQueue.snoc buf item) bufferRef
+            liftEffect $ Ref.write (size + 1) sizeRef
+            AVar.put unit mutex
+            when wasEmpty $ AVar.put unit notEmpty
+            when (size + 1 < bufferCapacity) $ AVar.put unit notFull
+
+          dequeue = do
+            AVar.take notEmpty
+            AVar.take mutex
+            buf <- liftEffect $ Ref.read bufferRef
+            size <- liftEffect $ Ref.read sizeRef
+            case CatQueue.uncons buf of
+              Nothing -> do
+                AVar.put unit mutex
+                dequeue
+              Just (Tuple head tail) -> do
+                liftEffect $ Ref.write tail bufferRef
+                liftEffect $ Ref.write (size - 1) sizeRef
+                let hasMore = (size - 1) > 0
+                let wasFull = size == bufferCapacity
+                AVar.put unit mutex
+                when hasMore $ AVar.put unit notEmpty
+                when wasFull $ AVar.put unit notFull
+                pure head
+
+          producer s = do
+            stepResult <- Om.runReader ctx (runStrom s)
+            step <- either (\_ -> throwError (Exception.error "Stream error")) pure stepResult
+            case step of
+              Done Nothing -> enqueue MergeDone
+              Done (Just chunk) -> do
+                enqueue (MergeChunk chunk)
+                enqueue MergeDone
+              Loop (Tuple maybeChunk next) -> do
+                case maybeChunk of
+                  Just chunk -> enqueue (MergeChunk chunk)
+                  Nothing -> pure unit
+                producer next
+
+        fibers <- traverse (\s -> forkAff (producer s)) streams
+
+        let
+          totalStreams = Array.length streams
+          consumer doneCount = mkStrom $ liftAff do
+            if doneCount >= totalStreams then do
+              traverse_ (\fiber -> killFiber (Exception.error "done") fiber) fibers
+              pure $ Done Nothing
+            else do
+              msg <- dequeue
+              case msg of
+                MergeDone -> do
+                  stepResult <- Om.runReader ctx (runStrom $ consumer (doneCount + 1))
+                  either (\_ -> throwError (Exception.error "Consumer error")) pure stepResult
+                MergeChunk chunk ->
+                  pure $ Loop $ Tuple (Just chunk) (consumer doneCount)
+
+        stepResult <- Om.runReader ctx (runStrom $ consumer 0)
+        either (\_ -> throwError (Exception.error "Consumer init error")) pure stepResult
 
 --------------------------------------------------------------------------------
 -- Parallel Processing
@@ -1264,13 +1587,25 @@ mapPar concurrency f stream
             in
               if Array.null group then [] else Array.cons group (chunksOf n rest)
 
+-- | Unordered parallel map (currently same as mapPar)
+mapParUnordered :: forall ctx err a b. Int -> (a -> Om ctx err b) -> Strom ctx err a -> Strom ctx err b
+mapParUnordered = mapPar
+
 -- | Alias for mapPar with explicit "M" naming
 mapMPar :: forall ctx err a b. Int -> (a -> Om ctx err b) -> Strom ctx err a -> Strom ctx err b
 mapMPar = mapPar
 
+-- | Alias for unordered mapPar with explicit "M" naming
+mapMParUnordered :: forall ctx err a b. Int -> (a -> Om ctx err b) -> Strom ctx err a -> Strom ctx err b
+mapMParUnordered = mapParUnordered
+
 -- | For each element, execute an effect in parallel with bounded concurrency
 foreachPar :: forall ctx err a. Int -> (a -> Om ctx err Unit) -> Strom ctx err a -> Om ctx err Unit
 foreachPar concurrency f stream = runDrain (mapPar concurrency f stream)
+
+-- | Unordered parallel foreach
+foreachParUnordered :: forall ctx err a. Int -> (a -> Om ctx err Unit) -> Strom ctx err a -> Om ctx err Unit
+foreachParUnordered concurrency f stream = runDrain (mapParUnordered concurrency f stream)
 
 --------------------------------------------------------------------------------
 -- Error Handling
