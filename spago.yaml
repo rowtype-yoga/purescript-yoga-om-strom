@@ -8,8 +8,7 @@ package:
       - "src/Test/**"
     location:
       githubOwner: rowtype-yoga
-      githubRepo: purescript-yoga-om
-      subdir: packages/yoga-om-strom
+      githubRepo: purescript-yoga-om-strom
   dependencies:
     - aff: ">=7.1.0 <8.0.0"
     - arrays: ">=7.3.0 <8.0.0"
