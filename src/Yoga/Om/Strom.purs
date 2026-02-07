@@ -108,6 +108,9 @@ module Yoga.Om.Strom
   , bracket
   , bracketExit
   , acquireRelease
+  -- Internal (needed by WebStream)
+  , mkStrom
+  , runStrom
   ) where
 
 import Prelude
@@ -129,7 +132,7 @@ import Data.List as List
 import Data.Maybe (Maybe(..))
 import Data.Time.Duration (Milliseconds(..))
 import Data.Traversable (traverse, traverse_)
-import Data.Tuple (Tuple(..))
+import Data.Tuple.Nested (type (/\), (/\))
 import Data.Variant (Variant)
 import Effect.Aff (Aff, Error, delay, forkAff, joinFiber, killFiber)
 import Effect.Aff.AVar as AVar
@@ -160,18 +163,18 @@ import Yoga.Om as Om
 -- | - Loop (chunk, next) => emit chunk (if present) and continue with next
 -- | - Done finalChunk => emit final chunk (if present) and stop
 newtype Strom ctx err a = Strom
-  { pull :: Om ctx err (Step (Tuple (Maybe (Chunk a)) (Strom ctx err a)) (Maybe (Chunk a)))
+  { pull :: Om ctx err (Step (((Maybe (Chunk a)) /\ (Strom ctx err a))) (Maybe (Chunk a)))
   }
 
 -- | Chunks for efficient batch processing
 type Chunk a = Array a
 
 -- | Helper to create a Strom from a pull function
-mkStrom :: forall ctx err a. Om ctx err (Step (Tuple (Maybe (Chunk a)) (Strom ctx err a)) (Maybe (Chunk a))) -> Strom ctx err a
+mkStrom :: forall ctx err a. Om ctx err (Step (((Maybe (Chunk a)) /\ (Strom ctx err a))) (Maybe (Chunk a))) -> Strom ctx err a
 mkStrom pull = Strom { pull }
 
 -- | Helper to unwrap a Strom
-runStrom :: forall ctx err a. Strom ctx err a -> Om ctx err (Step (Tuple (Maybe (Chunk a)) (Strom ctx err a)) (Maybe (Chunk a)))
+runStrom :: forall ctx err a. Strom ctx err a -> Om ctx err (Step (((Maybe (Chunk a)) /\ (Strom ctx err a))) (Maybe (Chunk a)))
 runStrom (Strom s) = s.pull
 
 --------------------------------------------------------------------------------
@@ -181,22 +184,22 @@ runStrom (Strom s) = s.pull
 -- | Stream identifier for tracking which stream produced data
 data StreamId = StreamId1 | StreamId2
 
-derive instance eqStreamId :: Eq StreamId
-derive instance ordStreamId :: Ord StreamId
+derive instance Eq StreamId
+derive instance Ord StreamId
 
 -- | Messages passed through the coordination queue
 data QueueItem a
   = DataChunk (Array a) StreamId
   | StreamDone StreamId
 
-derive instance functorQueueItem :: Functor QueueItem
+derive instance Functor QueueItem
 
 -- | Messages for mergeAllND buffered queue
 data MergeAllItem a
   = MergeChunk (Array a)
   | MergeDone
 
-derive instance functorMergeAllItem :: Functor MergeAllItem
+derive instance Functor MergeAllItem
 
 -- | Merge termination strategy (like ZStream HaltStrategy)
 data HaltStrategy
@@ -205,14 +208,14 @@ data HaltStrategy
   | HaltLeft
   | HaltRight
 
-derive instance eqHaltStrategy :: Eq HaltStrategy
+derive instance Eq HaltStrategy
 
 -- | Messages for buffering queues
 data BufferItem a
   = BufferChunk (Array a)
   | BufferDone
 
-derive instance functorBufferItem :: Functor BufferItem
+derive instance Functor BufferItem
 
 --------------------------------------------------------------------------------
 -- Construction
@@ -268,7 +271,7 @@ rangeStrom start end = rangeHelper start end
           chunkEnd = min (current + chunkSize) limit
           chunk = Array.range current (chunkEnd - 1)
         if chunkEnd >= limit then pure $ Done $ Just chunk -- Final chunk
-        else pure $ Loop $ Tuple (Just chunk) (rangeHelper chunkEnd limit) -- Emit chunk and continue
+        else pure $ Loop $ ((Just chunk) /\ (rangeHelper chunkEnd limit)) -- Emit chunk and continue
 
 -- | Iterate producing values - limited to ~10,000 elements for stack safety
 -- | For truly infinite streams, use `iterateStromInfinite` (with Aff overhead)
@@ -306,7 +309,7 @@ iterateStromInfinite f initial = iterateHelper initial
         finalVal <- STRef.read valRef
         frozen <- STArray.unsafeFreeze arr
         pure { arr: frozen, nextVal: finalVal }
-    pure $ Loop $ Tuple (Just result.arr) (iterateHelper result.nextVal)
+    pure $ Loop $ ((Just result.arr) /\ (iterateHelper result.nextVal))
 
 -- | Repeat a value - limited to ~10,000 elements for stack safety
 repeatStrom :: forall ctx err a. a -> Strom ctx err a
@@ -321,7 +324,7 @@ repeatStromInfinite a = repeatHelper unit
     -- Async boundary resets the stack!
     liftAff $ delay (Milliseconds 0.0)
     let chunk = Array.replicate 10000 a
-    pure $ Loop $ Tuple (Just chunk) (repeatHelper unit)
+    pure $ Loop $ ((Just chunk) /\ (repeatHelper unit))
 
 -- | Repeat an Om computation - limited to 100 iterations for stack safety
 -- | For truly infinite repetition, use `repeatOmStromInfinite` (with Aff overhead)
@@ -333,7 +336,7 @@ repeatOmStrom om = repeatOmHelper 0
     | count >= maxCount = empty
     | otherwise = mkStrom do
         value <- om
-        pure $ Loop $ Tuple (Just [ value ]) (repeatOmHelper (count + 1))
+        pure $ Loop $ ((Just [ value ]) /\ (repeatOmHelper (count + 1)))
 
 -- | Truly infinite Om repetition - stack-safe via Aff async boundaries
 -- | Adds tiny delay (0ms) at each pull to reset the stack
@@ -344,11 +347,11 @@ repeatOmStromInfinite om = repeatOmHelper unit
     -- Async boundary resets the stack!
     liftAff $ delay (Milliseconds 0.0)
     value <- om
-    pure $ Loop $ Tuple (Just [ value ]) (repeatOmHelper unit)
+    pure $ Loop $ ((Just [ value ]) /\ (repeatOmHelper unit))
 
 -- | Unfold a stream from a seed value - can be infinite if f never returns Nothing
 -- | Emits chunks lazily, terminates when f returns Nothing
-unfoldStrom :: forall ctx err a b. (b -> Maybe (Tuple a b)) -> b -> Strom ctx err a
+unfoldStrom :: forall ctx err a b. (b -> Maybe ((a /\ b))) -> b -> Strom ctx err a
 unfoldStrom f seed = unfoldHelper seed
   where
   unfoldHelper currentSeed = mkStrom do
@@ -357,7 +360,7 @@ unfoldStrom f seed = unfoldHelper seed
       Nothing -> pure $ Done $ if Array.null chunk.values then Nothing else Just chunk.values
       Just nextSeed ->
         if Array.null chunk.values then runStrom (unfoldHelper nextSeed)
-        else pure $ Loop $ Tuple (Just chunk.values) (unfoldHelper nextSeed)
+        else pure $ Loop $ ((Just chunk.values) /\ (unfoldHelper nextSeed))
 
   buildChunk seed' size = ST.run do
     arr <- STArray.unsafeThaw []
@@ -370,7 +373,7 @@ unfoldStrom f seed = unfoldHelper seed
         s <- STRef.read seedRef
         case f s of
           Nothing -> void $ STRef.write true stoppedRef
-          Just (Tuple value nextS) -> do
+          Just ((value /\ nextS)) -> do
             void $ STArray.push value arr
             void $ STRef.write nextS seedRef
     frozen <- STArray.unsafeFreeze arr
@@ -379,14 +382,14 @@ unfoldStrom f seed = unfoldHelper seed
     pure { values: frozen, finalSeed: if stopped then Nothing else Just finalSeed }
 
 -- | Unfold a stream with an effectful function
-unfoldOmStrom :: forall ctx err a b. (b -> Om ctx err (Maybe (Tuple a b))) -> b -> Strom ctx err a
+unfoldOmStrom :: forall ctx err a b. (b -> Om ctx err (Maybe ((a /\ b)))) -> b -> Strom ctx err a
 unfoldOmStrom f seed = mkStrom go
   where
   go = do
     result <- f seed
     case result of
       Nothing -> pure $ Done Nothing
-      Just (Tuple value nextSeed) -> pure $ Loop $ Tuple (Just [ value ]) (unfoldOmStrom f nextSeed)
+      Just ((value /\ nextSeed)) -> pure $ Loop $ ((Just [ value ]) /\ (unfoldOmStrom f nextSeed))
 
 --------------------------------------------------------------------------------
 -- Transformations
@@ -399,7 +402,7 @@ mapStrom f stream = mkStrom do
   case step of
     Done Nothing -> pure $ Done Nothing
     Done (Just chunk) -> pure $ Done $ Just $ Functor.map f chunk
-    Loop (Tuple maybeChunk next) -> pure $ Loop $ Tuple (Functor.map (Functor.map f) maybeChunk) (mapStrom f next)
+    Loop ((maybeChunk /\ next)) -> pure $ Loop $ ((Functor.map (Functor.map f) maybeChunk) /\ (mapStrom f next))
 
 -- | Map with a monadic effect
 mapMStrom :: forall ctx err a b. (a -> Om ctx err b) -> Strom ctx err a -> Strom ctx err b
@@ -410,11 +413,11 @@ mapMStrom f stream = mkStrom do
     Done (Just chunk) -> do
       mapped <- traverse f chunk
       pure $ Done $ Just mapped
-    Loop (Tuple maybeChunk next) -> do
+    Loop ((maybeChunk /\ next)) -> do
       mappedChunk <- case maybeChunk of
         Nothing -> pure Nothing
         Just chunk -> Just <$> traverse f chunk
-      pure $ Loop $ Tuple mappedChunk (mapMStrom f next)
+      pure $ Loop $ (mappedChunk /\ (mapMStrom f next))
 
 -- | Tap (observe without modifying)
 tapStrom :: forall ctx err a. (a -> Unit) -> Strom ctx err a -> Strom ctx err a
@@ -425,16 +428,15 @@ tapStrom f stream = mkStrom do
     Done (Just chunk) -> do
       let _ = Functor.map f chunk
       pure $ Done $ Just chunk
-    Loop (Tuple maybeChunk next) -> do
+    Loop ((maybeChunk /\ next)) -> do
       let
         tappedChunk = case maybeChunk of
           Nothing -> Nothing
           Just chunk ->
-            let
-              _ = Functor.map f chunk
-            in
+            do
+              let _ = Functor.map f chunk
               Just chunk
-      pure $ Loop $ Tuple tappedChunk (tapStrom f next)
+      pure $ Loop $ (tappedChunk /\ (tapStrom f next))
 
 -- | Tap with monadic effect (observe with effects)
 tapMStrom :: forall ctx err a. (a -> Om ctx err Unit) -> Strom ctx err a -> Strom ctx err a
@@ -445,13 +447,13 @@ tapMStrom f stream = mkStrom do
     Done (Just chunk) -> do
       _ <- traverse f chunk
       pure $ Done $ Just chunk
-    Loop (Tuple maybeChunk next) -> do
+    Loop ((maybeChunk /\ next)) -> do
       tappedChunk <- case maybeChunk of
         Nothing -> pure Nothing
         Just chunk -> do
           _ <- traverse f chunk
           pure $ Just chunk
-      pure $ Loop $ Tuple tappedChunk (tapMStrom f next)
+      pure $ Loop $ (tappedChunk /\ (tapMStrom f next))
 
 -- | Bind for streams (monadic flatMap/chain)
 -- | Use >>= operator for cleaner syntax: `stream >>= f`
@@ -469,35 +471,33 @@ scanStrom f initial stream = scanHelper initial stream
       Done (Just chunk) -> do
         -- Build results by folding and collecting intermediate values
         let
-          Tuple _ results = Array.foldl
-            ( \(Tuple prevAcc accList) item ->
-                let
-                  newAcc = f prevAcc item
-                in
-                  Tuple newAcc (Array.snoc accList newAcc)
+          (_ /\ results) = Array.foldl
+            ( \((prevAcc /\ accList)) item ->
+                do
+                  let newAcc = f prevAcc item
+                  (newAcc /\ (Array.snoc accList newAcc))
             )
-            (Tuple acc [])
+            (acc /\ [])
             chunk
         pure $ Done $ if Array.null results then Nothing else Just results
-      Loop (Tuple maybeChunk next) ->
+      Loop ((maybeChunk /\ next)) ->
         case maybeChunk of
-          Nothing -> pure $ Loop $ Tuple Nothing (scanHelper acc next)
+          Nothing -> pure $ Loop $ (Nothing /\ (scanHelper acc next))
           Just chunk -> do
             let
-              Tuple newAcc results = Array.foldl
-                ( \(Tuple prevAcc accList) item ->
-                    let
-                      currAcc = f prevAcc item
-                    in
-                      Tuple currAcc (Array.snoc accList currAcc)
+              (newAcc /\ results) = Array.foldl
+                ( \((prevAcc /\ accList)) item ->
+                    do
+                      let currAcc = f prevAcc item
+                      (currAcc /\ (Array.snoc accList currAcc))
                 )
-                (Tuple acc [])
+                (acc /\ [])
                 chunk
-            if Array.null results then pure $ Loop $ Tuple Nothing (scanHelper newAcc next)
-            else pure $ Loop $ Tuple (Just results) (scanHelper newAcc next)
+            if Array.null results then pure $ Loop $ (Nothing /\ (scanHelper newAcc next))
+            else pure $ Loop $ ((Just results) /\ (scanHelper newAcc next))
 
 -- | Map with accumulator (stateful map)
-mapAccumStrom :: forall ctx err a b s. (s -> a -> Tuple s b) -> s -> Strom ctx err a -> Strom ctx err b
+mapAccumStrom :: forall ctx err a b s. (s -> a -> (s /\ b)) -> s -> Strom ctx err a -> Strom ctx err b
 mapAccumStrom f initial stream = mapAccumHelper initial stream
   where
   mapAccumHelper state s = mkStrom do
@@ -506,32 +506,30 @@ mapAccumStrom f initial stream = mapAccumHelper initial stream
       Done Nothing -> pure $ Done Nothing
       Done (Just chunk) -> do
         let
-          Tuple finalState results = Array.foldl
-            ( \(Tuple st acc) a ->
-                let
-                  Tuple newSt b = f st a
-                in
-                  Tuple newSt (Array.snoc acc b)
+          (finalState /\ results) = Array.foldl
+            ( \((st /\ acc)) a ->
+                do
+                  let (newSt /\ b) = f st a
+                  (newSt /\ (Array.snoc acc b))
             )
-            (Tuple state [])
+            (state /\ [])
             chunk
         pure $ Done $ if Array.null results then Nothing else Just results
-      Loop (Tuple maybeChunk next) ->
+      Loop ((maybeChunk /\ next)) ->
         case maybeChunk of
-          Nothing -> pure $ Loop $ Tuple Nothing (mapAccumHelper state next)
+          Nothing -> pure $ Loop $ (Nothing /\ (mapAccumHelper state next))
           Just chunk -> do
             let
-              Tuple newState results = Array.foldl
-                ( \(Tuple st acc) a ->
-                    let
-                      Tuple newSt b = f st a
-                    in
-                      Tuple newSt (Array.snoc acc b)
+              (newState /\ results) = Array.foldl
+                ( \((st /\ acc)) a ->
+                    do
+                      let (newSt /\ b) = f st a
+                      (newSt /\ (Array.snoc acc b))
                 )
-                (Tuple state [])
+                (state /\ [])
                 chunk
-            if Array.null results then pure $ Loop $ Tuple Nothing (mapAccumHelper newState next)
-            else pure $ Loop $ Tuple (Just results) (mapAccumHelper newState next)
+            if Array.null results then pure $ Loop $ (Nothing /\ (mapAccumHelper newState next))
+            else pure $ Loop $ ((Just results) /\ (mapAccumHelper newState next))
 
 -- | Filter elements
 filterStrom :: forall ctx err a. (a -> Boolean) -> Strom ctx err a -> Strom ctx err a
@@ -542,16 +540,15 @@ filterStrom predicate stream = mkStrom do
     Done (Just chunk) -> do
       let filtered = Array.filter predicate chunk
       pure $ Done $ if Array.null filtered then Nothing else Just filtered
-    Loop (Tuple maybeChunk next) -> do
+    Loop ((maybeChunk /\ next)) -> do
       let
         filteredChunk = case maybeChunk of
           Nothing -> Nothing
           Just chunk ->
-            let
-              filtered = Array.filter predicate chunk
-            in
+            do
+              let filtered = Array.filter predicate chunk
               if Array.null filtered then Nothing else Just filtered
-      pure $ Loop $ Tuple filteredChunk (filterStrom predicate next)
+      pure $ Loop $ (filteredChunk /\ (filterStrom predicate next))
 
 --------------------------------------------------------------------------------
 -- Selection
@@ -573,9 +570,9 @@ takeStrom n stream = takeHelper n stream
               numTaken = Array.length taken
             if numTaken == 0 then pure $ Done Nothing
             else pure $ Done $ Just taken
-          Loop (Tuple maybeChunk next) ->
+          Loop ((maybeChunk /\ next)) ->
             case maybeChunk of
-              Nothing -> pure $ Loop $ Tuple Nothing (takeHelper remaining next)
+              Nothing -> pure $ Loop $ (Nothing /\ (takeHelper remaining next))
               Just chunk -> do
                 let
                   chunkLen = Array.length chunk
@@ -584,7 +581,7 @@ takeStrom n stream = takeHelper n stream
                   newRemaining = remaining - numTaken
                 if numTaken == 0 then pure $ Done Nothing
                 else if newRemaining <= 0 then pure $ Done $ Just taken
-                else pure $ Loop $ Tuple (Just taken) (takeHelper newRemaining next)
+                else pure $ Loop $ ((Just taken) /\ (takeHelper newRemaining next))
 
 -- | Take while predicate is true
 takeWhileStrom :: forall ctx err a. (a -> Boolean) -> Strom ctx err a -> Strom ctx err a
@@ -596,7 +593,7 @@ takeWhileStrom predicate stream = mkStrom do
       let taken = Array.takeWhile predicate chunk
       if Array.length taken < Array.length chunk then pure $ Done $ Just taken
       else pure $ Done $ Just taken
-    Loop (Tuple maybeChunk next) -> pure $ Loop $ Tuple maybeChunk (takeWhileStrom predicate next)
+    Loop ((maybeChunk /\ next)) -> pure $ Loop $ (maybeChunk /\ (takeWhileStrom predicate next))
 
 -- | Drop n elements (with proper state tracking across chunks)
 dropStrom :: forall ctx err a. Int -> Strom ctx err a -> Strom ctx err a
@@ -613,19 +610,17 @@ dropStrom n stream
               Done (Just chunk) -> do
                 let dropped = Array.drop remaining chunk
                 pure $ Done $ if Array.null dropped then Nothing else Just dropped
-              Loop (Tuple maybeChunk next) ->
+              Loop ((maybeChunk /\ next)) ->
                 case maybeChunk of
-                  Nothing -> pure $ Loop $ Tuple Nothing (dropHelper remaining next)
+                  Nothing -> pure $ Loop $ (Nothing /\ (dropHelper remaining next))
                   Just chunk ->
-                    let
-                      chunkLen = Array.length chunk
-                    in
-                      if remaining >= chunkLen then pure $ Loop $ Tuple Nothing (dropHelper (remaining - chunkLen) next)
+                    do
+                      let chunkLen = Array.length chunk
+                      if remaining >= chunkLen then pure $ Loop $ (Nothing /\ (dropHelper (remaining - chunkLen) next))
                       else
-                        let
-                          dropped = Array.drop remaining chunk
-                        in
-                          pure $ Loop $ Tuple (Just dropped) next
+                        do
+                          let dropped = Array.drop remaining chunk
+                          pure $ Loop $ ((Just dropped) /\ next)
 
 -- | Take until predicate is true (includes the matching element)
 takeUntilStrom :: forall ctx err a. (a -> Boolean) -> Strom ctx err a -> Strom ctx err a
@@ -637,12 +632,12 @@ takeUntilStrom predicate stream = mkStrom do
       case Array.findIndex predicate chunk of
         Just idx -> pure $ Done $ Just $ Array.take (idx + 1) chunk -- Include the matching element
         Nothing -> pure $ Done $ Just chunk
-    Loop (Tuple maybeChunk next) ->
+    Loop ((maybeChunk /\ next)) ->
       case maybeChunk of
-        Nothing -> pure $ Loop $ Tuple Nothing (takeUntilStrom predicate next)
+        Nothing -> pure $ Loop $ (Nothing /\ (takeUntilStrom predicate next))
         Just chunk -> case Array.findIndex predicate chunk of
           Just idx -> pure $ Done $ Just $ Array.take (idx + 1) chunk -- Found match, stop here
-          Nothing -> pure $ Loop $ Tuple (Just chunk) (takeUntilStrom predicate next) -- Keep going
+          Nothing -> pure $ Loop $ ((Just chunk) /\ (takeUntilStrom predicate next)) -- Keep going
 
 -- | Drop while predicate is true
 dropWhileStrom :: forall ctx err a. (a -> Boolean) -> Strom ctx err a -> Strom ctx err a
@@ -657,13 +652,13 @@ dropWhileStrom predicate stream = dropWhileHelper true stream
           Done (Just chunk) -> do
             let dropped = Array.dropWhile predicate chunk
             pure $ Done $ if Array.null dropped then Nothing else Just dropped
-          Loop (Tuple maybeChunk next) ->
+          Loop ((maybeChunk /\ next)) ->
             case maybeChunk of
-              Nothing -> pure $ Loop $ Tuple Nothing (dropWhileHelper stillDropping next)
+              Nothing -> pure $ Loop $ (Nothing /\ (dropWhileHelper stillDropping next))
               Just chunk -> do
                 let dropped = Array.dropWhile predicate chunk
-                if Array.null dropped then pure $ Loop $ Tuple Nothing (dropWhileHelper true next)
-                else pure $ Loop $ Tuple (Just dropped) next -- Found elements to keep, stop dropping
+                if Array.null dropped then pure $ Loop $ (Nothing /\ (dropWhileHelper true next))
+                else pure $ Loop $ ((Just dropped) /\ next) -- Found elements to keep, stop dropping
 
 -- | Filter with monadic predicate
 filterMStrom :: forall ctx err a. (a -> Om ctx err Boolean) -> Strom ctx err a -> Strom ctx err a
@@ -674,13 +669,13 @@ filterMStrom predicate stream = mkStrom do
     Done (Just chunk) -> do
       filtered <- Array.filterA predicate chunk
       pure $ Done $ if Array.null filtered then Nothing else Just filtered
-    Loop (Tuple maybeChunk next) -> do
+    Loop ((maybeChunk /\ next)) -> do
       filteredChunk <- case maybeChunk of
         Nothing -> pure Nothing
         Just chunk -> do
           filtered <- Array.filterA predicate chunk
           pure $ if Array.null filtered then Nothing else Just filtered
-      pure $ Loop $ Tuple filteredChunk (filterMStrom predicate next)
+      pure $ Loop $ (filteredChunk /\ (filterMStrom predicate next))
 
 -- | Collect with partial function (mapMaybe)
 collectStrom :: forall ctx err a b. (a -> Maybe b) -> Strom ctx err a -> Strom ctx err b
@@ -691,17 +686,15 @@ collectStrom f stream = mkStrom do
     Done (Just chunk) -> do
       let collected = Array.mapMaybe f chunk
       pure $ Done $ if Array.null collected then Nothing else Just collected
-    Loop (Tuple maybeChunk next) ->
-      let
-        collected = case maybeChunk of
-          Nothing -> Nothing
-          Just chunk ->
-            let
-              c = Array.mapMaybe f chunk
-            in
-              if Array.null c then Nothing else Just c
-      in
-        pure $ Loop $ Tuple collected (collectStrom f next)
+    Loop ((maybeChunk /\ next)) ->
+      do
+        let collected = case maybeChunk of
+              Nothing -> Nothing
+              Just chunk -> do
+                let c = Array.mapMaybe f chunk
+                if Array.null c then Nothing else Just c
+
+        pure $ Loop $ (collected /\ (collectStrom f next))
 
 -- | Collect with monadic partial function
 collectMStrom :: forall ctx err a b. (a -> Om ctx err (Maybe b)) -> Strom ctx err a -> Strom ctx err b
@@ -713,14 +706,14 @@ collectMStrom f stream = mkStrom do
       maybes <- traverse f chunk
       let collected = Array.mapMaybe identity maybes
       pure $ Done $ if Array.null collected then Nothing else Just collected
-    Loop (Tuple maybeChunk next) -> do
+    Loop ((maybeChunk /\ next)) -> do
       collected <- case maybeChunk of
         Nothing -> pure Nothing
         Just chunk -> do
           maybes <- traverse f chunk
           let c = Array.mapMaybe identity maybes
           pure $ if Array.null c then Nothing else Just c
-      pure $ Loop $ Tuple collected (collectMStrom f next)
+      pure $ Loop $ (collected /\ (collectMStrom f next))
 
 -- | Remove consecutive duplicates  
 changesStrom :: forall ctx err a. Eq a => Strom ctx err a -> Strom ctx err a
@@ -732,28 +725,28 @@ changesStrom stream = changesHelper Nothing stream
       Done Nothing -> pure $ Done Nothing
       Done (Just chunk) -> do
         let
-          Tuple _ result = Array.foldl
-            ( \(Tuple prev acc) curr ->
-                if Just curr == prev then Tuple (Just curr) acc
-                else Tuple (Just curr) (Array.snoc acc curr)
+          (_ /\ result) = Array.foldl
+            ( \((prev /\ acc)) curr ->
+                if Just curr == prev then ((Just curr) /\ acc)
+                else ((Just curr) /\ (Array.snoc acc curr))
             )
-            (Tuple lastSeen [])
+            (lastSeen /\ [])
             chunk
         pure $ Done $ if Array.null result then Nothing else Just result
-      Loop (Tuple maybeChunk next) ->
+      Loop ((maybeChunk /\ next)) ->
         case maybeChunk of
-          Nothing -> pure $ Loop $ Tuple Nothing (changesHelper lastSeen next)
+          Nothing -> pure $ Loop $ (Nothing /\ (changesHelper lastSeen next))
           Just chunk -> do
             let
-              Tuple newLast result = Array.foldl
-                ( \(Tuple prev acc) curr ->
-                    if Just curr == prev then Tuple (Just curr) acc
-                    else Tuple (Just curr) (Array.snoc acc curr)
+              (newLast /\ result) = Array.foldl
+                ( \((prev /\ acc)) curr ->
+                    if Just curr == prev then ((Just curr) /\ acc)
+                    else ((Just curr) /\ (Array.snoc acc curr))
                 )
-                (Tuple lastSeen [])
+                (lastSeen /\ [])
                 chunk
-            if Array.null result then pure $ Loop $ Tuple Nothing (changesHelper newLast next)
-            else pure $ Loop $ Tuple (Just result) (changesHelper newLast next)
+            if Array.null result then pure $ Loop $ (Nothing /\ (changesHelper newLast next))
+            else pure $ Loop $ ((Just result) /\ (changesHelper newLast next))
 
 --------------------------------------------------------------------------------
 -- Grouping
@@ -785,9 +778,9 @@ groupedStrom size stream
                 Nothing -> []
             if Array.null remainder then pure $ Done $ if Array.null (completeGroups <> lastGroup) then Nothing else Just (completeGroups <> lastGroup)
             else pure $ Done $ if Array.null (completeGroups <> [ remainder ]) then Nothing else Just (completeGroups <> [ remainder ])
-          Loop (Tuple maybeChunk next) ->
+          Loop ((maybeChunk /\ next)) ->
             case maybeChunk of
-              Nothing -> pure $ Loop $ Tuple Nothing (groupedHelper buffer next)
+              Nothing -> pure $ Loop $ (Nothing /\ (groupedHelper buffer next))
               Just chunk -> do
                 let
                   combined = buffer <> chunk
@@ -796,17 +789,16 @@ groupedStrom size stream
                   newBuffer = case Array.last groups of
                     Just g -> if Array.length g < size then g else []
                     Nothing -> []
-                if Array.null completeGroups then pure $ Loop $ Tuple Nothing (groupedHelper newBuffer next)
-                else pure $ Loop $ Tuple (Just completeGroups) (groupedHelper newBuffer next)
+                if Array.null completeGroups then pure $ Loop $ (Nothing /\ (groupedHelper newBuffer next))
+                else pure $ Loop $ ((Just completeGroups) /\ (groupedHelper newBuffer next))
 
       groupsOf :: forall b. Int -> Array b -> Array (Array b)
       groupsOf n arr
         | n <= 0 || Array.null arr = []
         | otherwise =
-            let
-              group = Array.take n arr
-              rest = Array.drop n arr
-            in
+            do
+              let group = Array.take n arr
+                  rest = Array.drop n arr
               if Array.null group then [] else Array.cons group (groupsOf n rest)
 
 -- | Alias for groupedStrom
@@ -825,67 +817,62 @@ groupByStrom keyFn stream = groupByHelper Nothing [] stream
         pure $ Done $ if Array.null buffer then Nothing else Just [ buffer ]
       Done (Just chunk) -> do
         let
-          Tuple _ result = Array.foldl
-            ( \(Tuple currentKey acc) item ->
-                let
-                  itemKey = keyFn item
-                in
+          (_ /\ result) = Array.foldl
+            ( \((currentKey /\ acc)) item ->
+                do
+                  let itemKey = keyFn item
                   case currentKey of
-                    Nothing -> Tuple (Just itemKey) { groups: [], buffer: [ item ] }
+                    Nothing -> ((Just itemKey) /\ { groups: [], buffer: [ item ] })
                     Just k ->
-                      if k == itemKey then Tuple (Just itemKey) { groups: acc.groups, buffer: Array.snoc acc.buffer item }
-                      else Tuple (Just itemKey) { groups: Array.snoc acc.groups acc.buffer, buffer: [ item ] }
+                      if k == itemKey then ((Just itemKey) /\ { groups: acc.groups, buffer: Array.snoc acc.buffer item })
+                      else ((Just itemKey) /\ { groups: Array.snoc acc.groups acc.buffer, buffer: [ item ] })
             )
-            (Tuple lastKey { groups: [], buffer })
+            (lastKey /\ { groups: [], buffer })
             chunk
           allGroups =
             if Array.null result.buffer then result.groups
             else Array.snoc result.groups result.buffer
         pure $ Done $ if Array.null allGroups then Nothing else Just allGroups
-      Loop (Tuple maybeChunk next) ->
+      Loop ((maybeChunk /\ next)) ->
         case maybeChunk of
-          Nothing -> pure $ Loop $ Tuple Nothing (groupByHelper lastKey buffer next)
+          Nothing -> pure $ Loop $ (Nothing /\ (groupByHelper lastKey buffer next))
           Just chunk -> do
             let
-              Tuple newKey result = Array.foldl
-                ( \(Tuple currentKey acc) item ->
-                    let
-                      itemKey = keyFn item
-                    in
+              (newKey /\ result) = Array.foldl
+                ( \((currentKey /\ acc)) item ->
+                    do
+                      let itemKey = keyFn item
                       case currentKey of
-                        Nothing -> Tuple (Just itemKey) { groups: [], buffer: [ item ] }
+                        Nothing -> ((Just itemKey) /\ { groups: [], buffer: [ item ] })
                         Just k ->
-                          if k == itemKey then Tuple (Just itemKey) { groups: acc.groups, buffer: Array.snoc acc.buffer item }
-                          else Tuple (Just itemKey) { groups: Array.snoc acc.groups acc.buffer, buffer: [ item ] }
+                          if k == itemKey then ((Just itemKey) /\ { groups: acc.groups, buffer: Array.snoc acc.buffer item })
+                          else ((Just itemKey) /\ { groups: Array.snoc acc.groups acc.buffer, buffer: [ item ] })
                 )
-                (Tuple lastKey { groups: [], buffer })
+                (lastKey /\ { groups: [], buffer })
                 chunk
-            if Array.null result.groups then pure $ Loop $ Tuple Nothing (groupByHelper newKey result.buffer next)
-            else pure $ Loop $ Tuple (Just result.groups) (groupByHelper newKey result.buffer next)
+            if Array.null result.groups then pure $ Loop $ (Nothing /\ (groupByHelper newKey result.buffer next))
+            else pure $ Loop $ ((Just result.groups) /\ (groupByHelper newKey result.buffer next))
 
 -- | Partition a stream by a predicate into two separate operations
 -- | Returns a tuple of (trues, falses)
 -- | Note: This requires running the stream twice, so it's not lazy
-partition :: forall ctx err a. (a -> Boolean) -> Strom ctx err a -> Tuple (Strom ctx err a) (Strom ctx err a)
+partition :: forall ctx err a. (a -> Boolean) -> Strom ctx err a -> ((Strom ctx err a) /\ (Strom ctx err a))
 partition predicate stream =
-  Tuple
-    (filterStrom predicate stream)
-    (filterStrom (not <<< predicate) stream)
+  (filterStrom predicate stream)
+    /\ (filterStrom (not <<< predicate) stream)
 
 -- | Partition and map in one pass
-partitionMap :: forall ctx err a b c. (a -> Either b c) -> Strom ctx err a -> Tuple (Strom ctx err b) (Strom ctx err c)
+partitionMap :: forall ctx err a b c. (a -> Either b c) -> Strom ctx err a -> ((Strom ctx err b) /\ (Strom ctx err c))
 partitionMap f stream =
-  let
-    leftOnly x = case f x of
-      Left b -> Just b
-      Right _ -> Nothing
-    rightOnly x = case f x of
-      Left _ -> Nothing
-      Right c -> Just c
-  in
-    Tuple
-      (collectStrom leftOnly stream)
-      (collectStrom rightOnly stream)
+  do
+    let leftOnly x = case f x of
+          Left b -> Just b
+          Right _ -> Nothing
+        rightOnly x = case f x of
+          Left _ -> Nothing
+          Right c -> Just c
+    (collectStrom leftOnly stream)
+      /\ (collectStrom rightOnly stream)
 
 --------------------------------------------------------------------------------
 -- Timing
@@ -901,12 +888,12 @@ debounce duration stream = mkStrom do
     Done (Just chunk) -> do
       Om.delay duration
       pure $ Done $ Just chunk
-    Loop (Tuple maybeChunk next) -> do
+    Loop ((maybeChunk /\ next)) -> do
       case maybeChunk of
-        Nothing -> pure $ Loop $ Tuple Nothing (debounce duration next)
+        Nothing -> pure $ Loop $ (Nothing /\ (debounce duration next))
         Just chunk -> do
           Om.delay duration
-          pure $ Loop $ Tuple (Just chunk) (debounce duration next)
+          pure $ Loop $ ((Just chunk) /\ (debounce duration next))
 
 -- | Throttle a stream - emit at most once per duration period
 -- | Tracks last emission time and skips elements that arrive too quickly
@@ -919,31 +906,31 @@ throttle (Milliseconds duration) stream = throttleWithState 0.0 stream
     case step of
       Done Nothing -> pure $ Done Nothing
       Done (Just chunk) -> do
-        Tuple newLastEmit filtered <- filterByTime lastEmit chunk
+        (newLastEmit /\ filtered) <- filterByTime lastEmit chunk
         pure $ Done $ if Array.null filtered then Nothing else Just filtered
-      Loop (Tuple maybeChunk next) -> do
+      Loop ((maybeChunk /\ next)) -> do
         case maybeChunk of
-          Nothing -> pure $ Loop $ Tuple Nothing (throttleWithState lastEmit next)
+          Nothing -> pure $ Loop $ (Nothing /\ (throttleWithState lastEmit next))
           Just chunk -> do
-            Tuple newLastEmit filtered <- filterByTime lastEmit chunk
-            if Array.null filtered then pure $ Loop $ Tuple Nothing (throttleWithState newLastEmit next)
-            else pure $ Loop $ Tuple (Just filtered) (throttleWithState newLastEmit next)
+            (newLastEmit /\ filtered) <- filterByTime lastEmit chunk
+            if Array.null filtered then pure $ Loop $ (Nothing /\ (throttleWithState newLastEmit next))
+            else pure $ Loop $ ((Just filtered) /\ (throttleWithState newLastEmit next))
 
   filterByTime lastEmit chunk = do
-    Tuple newLastEmit results <- Array.foldl
+    (newLastEmit /\ results) <- Array.foldl
       ( \acc value -> do
-          Tuple currentLast filtered <- acc
+          (currentLast /\ filtered) <- acc
           currentTime <- liftEffect now
           let Milliseconds currentMillis = unInstant currentTime
           let elapsed = currentMillis - currentLast
           if elapsed >= duration then
-            pure $ Tuple currentMillis (Array.snoc filtered value)
+            pure $ (currentMillis /\ (Array.snoc filtered value))
           else
-            pure $ Tuple currentLast filtered
+            pure $ (currentLast /\ filtered)
       )
-      (pure $ Tuple lastEmit [])
+      (pure $ (lastEmit /\ []))
       chunk
-    pure $ Tuple newLastEmit results
+    pure $ (newLastEmit /\ results)
 
 -- | Delay each element by a duration
 delayStrom :: forall ctx err a. Milliseconds -> Strom ctx err a -> Strom ctx err a
@@ -957,33 +944,33 @@ delayStrom duration stream = mkStrom do
 
 -- | Fold over all elements
 runFold :: forall ctx err a b. b -> (b -> a -> b) -> Strom ctx err a -> Om ctx err b
-runFold initial f stream = tailRecM go (Tuple initial stream)
+runFold initial f stream = tailRecM go ((initial /\ stream))
   where
-  go (Tuple acc s) = do
+  go ((acc /\ s)) = do
     step <- runStrom s
     case step of
       Done Nothing -> pure $ Done acc
       Done (Just chunk) -> pure $ Done $ foldl f acc chunk
-      Loop (Tuple maybeChunk next) ->
+      Loop ((maybeChunk /\ next)) ->
         -- Process chunk if present and continue
         case maybeChunk of
-          Nothing -> pure $ Loop $ Tuple acc next
-          Just chunk -> pure $ Loop $ Tuple (foldl f acc chunk) next
+          Nothing -> pure $ Loop $ (acc /\ next)
+          Just chunk -> pure $ Loop $ ((foldl f acc chunk) /\ next)
 
 -- | Collect all elements into an array (O(n) using chunk accumulation)
 runCollect :: forall ctx err a. Strom ctx err a -> Om ctx err (Array a)
-runCollect stream = tailRecM go (Tuple List.Nil stream)
+runCollect stream = tailRecM go (List.Nil /\ stream)
   where
-  go (Tuple chunkList s) = do
+  go ((chunkList /\ s)) = do
     step <- runStrom s
     case step of
       Done Nothing -> pure $ Done $ Array.concat $ Array.fromFoldable $ List.reverse chunkList
       Done (Just chunk) -> pure $ Done $ Array.concat $ Array.fromFoldable $ List.reverse $ List.Cons chunk chunkList
-      Loop (Tuple maybeChunk next) ->
+      Loop ((maybeChunk /\ next)) ->
         -- Emit the chunk (if present) and continue
         case maybeChunk of
-          Nothing -> pure $ Loop $ Tuple chunkList next
-          Just chunk -> pure $ Loop $ Tuple (List.Cons chunk chunkList) next
+          Nothing -> pure $ Loop $ (chunkList /\ next)
+          Just chunk -> pure $ Loop $ ((List.Cons chunk chunkList) /\ next)
 
 -- | Run the stream and discard all elements
 runDrain :: forall ctx err a. Strom ctx err a -> Om ctx err Unit
@@ -1000,7 +987,7 @@ traverseStrom_ f stream = tailRecM go stream
       Done (Just chunk) -> do
         _ <- traverse f chunk
         pure $ Done unit
-      Loop (Tuple maybeChunk next) -> do
+      Loop ((maybeChunk /\ next)) -> do
         -- Process chunk if present, then continue
         case maybeChunk of
           Nothing -> pure unit
@@ -1060,8 +1047,8 @@ appendStrom toAppend baseStream = mkStrom do
   step <- runStrom baseStream
   case step of
     Done Nothing -> runStrom toAppend
-    Done (Just chunk) -> pure $ Loop $ Tuple (Just chunk) toAppend -- Emit chunk and continue with toAppend
-    Loop (Tuple maybeChunk next) -> pure $ Loop $ Tuple maybeChunk (appendStrom toAppend next)
+    Done (Just chunk) -> pure $ Loop $ ((Just chunk) /\ toAppend) -- Emit chunk and continue with toAppend
+    Loop ((maybeChunk /\ next)) -> pure $ Loop $ (maybeChunk /\ (appendStrom toAppend next))
 
 -- | Concatenate an array of streams
 -- | Uses foldr with flip to match appendStrom's pipeline-friendly parameter order
@@ -1069,8 +1056,8 @@ concatStrom :: forall ctx err a. Array (Strom ctx err a) -> Strom ctx err a
 concatStrom streams = Array.foldr (flip appendStrom) empty streams
 
 -- | Zip two streams together
-zipStrom :: forall ctx err a b. Strom ctx err a -> Strom ctx err b -> Strom ctx err (Tuple a b)
-zipStrom = zipWithStrom Tuple
+zipStrom :: forall ctx err a b. Strom ctx err a -> Strom ctx err b -> Strom ctx err ((a /\ b))
+zipStrom = zipWithStrom (/\)
 
 -- | Zip two streams with a function
 zipWithStrom :: forall ctx err a b c. (a -> b -> c) -> Strom ctx err a -> Strom ctx err b -> Strom ctx err c
@@ -1083,13 +1070,13 @@ zipWithStrom f s1 s2 = mkStrom do
       pure $ Done $ Just zipped
     Done Nothing, _ -> pure $ Done Nothing
     _, Done Nothing -> pure $ Done Nothing
-    Loop (Tuple maybeChunk1 next1), Loop (Tuple maybeChunk2 next2) ->
+    Loop ((maybeChunk1 /\ next1)), Loop ((maybeChunk2 /\ next2)) ->
       -- Both looping: zip chunks if both present, continue with both nexts
       case maybeChunk1, maybeChunk2 of
-        Just chunk1, Just chunk2 -> pure $ Loop $ Tuple (Just $ Array.zipWith f chunk1 chunk2) (zipWithStrom f next1 next2)
-        _, _ -> pure $ Loop $ Tuple Nothing (zipWithStrom f next1 next2)
-    Loop (Tuple _ next1), _ -> pure $ Loop $ Tuple Nothing (zipWithStrom f next1 s2)
-    _, Loop (Tuple _ next2) -> pure $ Loop $ Tuple Nothing (zipWithStrom f s1 next2)
+        Just chunk1, Just chunk2 -> pure $ Loop $ ((Just $ Array.zipWith f chunk1 chunk2) /\ (zipWithStrom f next1 next2))
+        _, _ -> pure $ Loop $ (Nothing /\ (zipWithStrom f next1 next2))
+    Loop ((_ /\ next1)), _ -> pure $ Loop $ (Nothing /\ (zipWithStrom f next1 s2))
+    _, Loop ((_ /\ next2)) -> pure $ Loop $ (Nothing /\ (zipWithStrom f s1 next2))
 
 -- | Interleave two streams - alternates between elements from each stream
 -- | Similar to merge but deterministic - always alternates
@@ -1101,16 +1088,16 @@ interleave s1 s2 = interleaveHelper true s1 s2
       step1 <- runStrom first
       case step1 of
         Done Nothing -> runStrom second
-        Done (Just chunk1) -> pure $ Loop $ Tuple (Just chunk1) (interleaveHelper false second first)
-        Loop (Tuple maybeChunk1 next1) ->
-          pure $ Loop $ Tuple maybeChunk1 (interleaveHelper false second next1)
+        Done (Just chunk1) -> pure $ Loop $ ((Just chunk1) /\ (interleaveHelper false second first))
+        Loop ((maybeChunk1 /\ next1)) ->
+          pure $ Loop $ (maybeChunk1 /\ (interleaveHelper false second next1))
     else do
       step2 <- runStrom second
       case step2 of
         Done Nothing -> runStrom first
-        Done (Just chunk2) -> pure $ Loop $ Tuple (Just chunk2) (interleaveHelper true first second)
-        Loop (Tuple maybeChunk2 next2) ->
-          pure $ Loop $ Tuple maybeChunk2 (interleaveHelper true first next2)
+        Done (Just chunk2) -> pure $ Loop $ ((Just chunk2) /\ (interleaveHelper true first second))
+        Loop ((maybeChunk2 /\ next2)) ->
+          pure $ Loop $ (maybeChunk2 /\ (interleaveHelper true first next2))
 
 -- | Intersperse a separator element between each element of the stream
 intersperse :: forall ctx err a. a -> Strom ctx err a -> Strom ctx err a
@@ -1126,15 +1113,15 @@ intersperse separator stream = intersperseHelper true stream
             if isFirst then Array.intercalate [ separator ] (Array.singleton <$> chunk)
             else Array.cons separator (Array.intercalate [ separator ] (Array.singleton <$> chunk))
         pure $ Done $ Just withSeparators
-      Loop (Tuple maybeChunk next) ->
+      Loop ((maybeChunk /\ next)) ->
         case maybeChunk of
-          Nothing -> pure $ Loop $ Tuple Nothing (intersperseHelper isFirst next)
+          Nothing -> pure $ Loop $ (Nothing /\ (intersperseHelper isFirst next))
           Just chunk -> do
             let
               withSeparators =
                 if isFirst then Array.intercalate [ separator ] (Array.singleton <$> chunk)
                 else Array.cons separator (Array.intercalate [ separator ] (Array.singleton <$> chunk))
-            pure $ Loop $ Tuple (Just withSeparators) (intersperseHelper false next)
+            pure $ Loop $ ((Just withSeparators) /\ (intersperseHelper false next))
 
 --------------------------------------------------------------------------------
 -- Buffering
@@ -1175,7 +1162,7 @@ bufferChunks capacity stream
               Nothing -> do
                 AVar.put unit mutex
                 dequeue
-              Just (Tuple head tail) -> do
+              Just ((head /\ tail)) -> do
                 liftEffect $ Ref.write tail bufferRef
                 liftEffect $ Ref.write (size - 1) sizeRef
                 let hasMore = (size - 1) > 0
@@ -1193,7 +1180,7 @@ bufferChunks capacity stream
               Done (Just chunk) -> do
                 enqueue (BufferChunk chunk)
                 enqueue BufferDone
-              Loop (Tuple maybeChunk next) -> do
+              Loop ((maybeChunk /\ next)) -> do
                 case maybeChunk of
                   Just chunk -> enqueue (BufferChunk chunk)
                   Nothing -> pure unit
@@ -1209,7 +1196,7 @@ bufferChunks capacity stream
                 killFiber (Exception.error "done") fiber
                 pure $ Done Nothing
               BufferChunk chunk ->
-                pure $ Loop $ Tuple (Just chunk) consumer
+                pure $ Loop $ ((Just chunk) /\ consumer)
 
         stepResult <- Om.runReader ctx (runStrom consumer)
         either (\_ -> throwError (Exception.error "Consumer init error")) pure stepResult
@@ -1249,7 +1236,7 @@ buffer capacity stream
               Nothing -> do
                 AVar.put unit mutex
                 dequeue
-              Just (Tuple head tail) -> do
+              Just ((head /\ tail)) -> do
                 liftEffect $ Ref.write tail bufferRef
                 liftEffect $ Ref.write (size - 1) sizeRef
                 let hasMore = (size - 1) > 0
@@ -1267,7 +1254,7 @@ buffer capacity stream
               Done (Just chunk) -> do
                 traverse_ (\a -> enqueue (BufferChunk [ a ])) chunk
                 enqueue BufferDone
-              Loop (Tuple maybeChunk next) -> do
+              Loop ((maybeChunk /\ next)) -> do
                 case maybeChunk of
                   Just chunk -> traverse_ (\a -> enqueue (BufferChunk [ a ])) chunk
                   Nothing -> pure unit
@@ -1283,7 +1270,7 @@ buffer capacity stream
                 killFiber (Exception.error "done") fiber
                 pure $ Done Nothing
               BufferChunk chunk ->
-                pure $ Loop $ Tuple (Just chunk) consumer
+                pure $ Loop $ ((Just chunk) /\ consumer)
 
         stepResult <- Om.runReader ctx (runStrom consumer)
         either (\_ -> throwError (Exception.error "Consumer init error")) pure stepResult
@@ -1392,7 +1379,7 @@ mergeNDWithStrategy bufferCapacity strategy stream1 stream2 = mkStrom do
           Nothing -> do
             AVar.put unit mutex
             dequeue
-          Just (Tuple head tail) -> do
+          Just ((head /\ tail)) -> do
             liftEffect $ Ref.write tail bufferRef
             liftEffect $ Ref.write (size - 1) sizeRef
             let hasMore = (size - 1) > 0
@@ -1414,7 +1401,7 @@ mergeNDWithStrategy bufferCapacity strategy stream1 stream2 = mkStrom do
             Done (Just chunk) -> do
               enqueue (DataChunk chunk StreamId1)
               enqueue (StreamDone StreamId1)
-            Loop (Tuple maybeChunk next) -> do
+            Loop ((maybeChunk /\ next)) -> do
               case maybeChunk of
                 Just chunk -> enqueue (DataChunk chunk StreamId1)
                 Nothing -> pure unit
@@ -1433,7 +1420,7 @@ mergeNDWithStrategy bufferCapacity strategy stream1 stream2 = mkStrom do
             Done (Just chunk) -> do
               enqueue (DataChunk chunk StreamId2)
               enqueue (StreamDone StreamId2)
-            Loop (Tuple maybeChunk next) -> do
+            Loop ((maybeChunk /\ next)) -> do
               case maybeChunk of
                 Just chunk -> enqueue (DataChunk chunk StreamId2)
                 Nothing -> pure unit
@@ -1460,7 +1447,7 @@ mergeNDWithStrategy bufferCapacity strategy stream1 stream2 = mkStrom do
               either (\_ -> throwError (Exception.error "Consumer error")) pure stepResult
             DataChunk chunk _streamId ->
               -- Got a chunk
-              pure $ Loop $ Tuple (Just chunk) (consumer doneLeft doneRight)
+              pure $ Loop $ ((Just chunk) /\ (consumer doneLeft doneRight))
 
     stepResult <- Om.runReader ctx (runStrom $ consumer false false)
     either (\_ -> throwError (Exception.error "Consumer init error")) pure stepResult
@@ -1505,7 +1492,7 @@ mergeAllNDWith bufferCapacity streams
               Nothing -> do
                 AVar.put unit mutex
                 dequeue
-              Just (Tuple head tail) -> do
+              Just ((head /\ tail)) -> do
                 liftEffect $ Ref.write tail bufferRef
                 liftEffect $ Ref.write (size - 1) sizeRef
                 let hasMore = (size - 1) > 0
@@ -1523,7 +1510,7 @@ mergeAllNDWith bufferCapacity streams
               Done (Just chunk) -> do
                 enqueue (MergeChunk chunk)
                 enqueue MergeDone
-              Loop (Tuple maybeChunk next) -> do
+              Loop ((maybeChunk /\ next)) -> do
                 case maybeChunk of
                   Just chunk -> enqueue (MergeChunk chunk)
                   Nothing -> pure unit
@@ -1544,7 +1531,7 @@ mergeAllNDWith bufferCapacity streams
                   stepResult <- Om.runReader ctx (runStrom $ consumer (doneCount + 1))
                   either (\_ -> throwError (Exception.error "Consumer error")) pure stepResult
                 MergeChunk chunk ->
-                  pure $ Loop $ Tuple (Just chunk) (consumer doneCount)
+                  pure $ Loop $ ((Just chunk) /\ (consumer doneCount))
 
         stepResult <- Om.runReader ctx (runStrom $ consumer 0)
         either (\_ -> throwError (Exception.error "Consumer init error")) pure stepResult
@@ -1568,23 +1555,22 @@ mapPar concurrency f stream
             let groups = chunksOf concurrency chunk
             results <- traverse (\group -> Om.inParallel (Functor.map f group)) groups
             pure $ Done $ Just $ Array.concat results
-          Loop (Tuple maybeChunk next) -> do
+          Loop ((maybeChunk /\ next)) -> do
             mappedChunk <- case maybeChunk of
               Nothing -> pure Nothing
               Just chunk -> do
                 let groups = chunksOf concurrency chunk
                 results <- traverse (\group -> Om.inParallel (Functor.map f group)) groups
                 pure $ Just $ Array.concat results
-            pure $ Loop $ Tuple mappedChunk (mapPar concurrency f next)
+            pure $ Loop $ (mappedChunk /\ (mapPar concurrency f next))
       where
       chunksOf :: forall x. Int -> Array x -> Array (Array x)
       chunksOf n arr
         | n <= 0 || Array.null arr = []
         | otherwise =
-            let
-              group = Array.take n arr
-              rest = Array.drop n arr
-            in
+            do
+              let group = Array.take n arr
+                  rest = Array.drop n arr
               if Array.null group then [] else Array.cons group (chunksOf n rest)
 
 -- | Unordered parallel map (currently same as mapPar)
@@ -1720,7 +1706,7 @@ instance Functor (Strom ctx err) where
         case step of
           Done Nothing -> pure $ Done Nothing
           Done (Just chunk) -> pure $ Done $ Just $ Functor.map f chunk
-          Loop (Tuple maybeChunk next) -> pure $ Loop $ Tuple (Functor.map (Functor.map f) maybeChunk) (Functor.map f next)
+          Loop ((maybeChunk /\ next)) -> pure $ Loop $ ((Functor.map (Functor.map f) maybeChunk) /\ (Functor.map f next))
     )
 
 instance Apply (Strom ctx err) where
@@ -1729,29 +1715,27 @@ instance Apply (Strom ctx err) where
         runStrom as >>= \stepA ->
           case stepF, stepA of
             Done (Just funcs), Done (Just vals) ->
-              let
-                results = do
-                  f <- funcs
-                  a <- vals
-                  pure (f a)
-              in
+              do
+                let results = do
+                      f <- funcs
+                      a <- vals
+                      pure (f a)
                 pure $ Done $ Just results
             Done Nothing, _ -> pure $ Done Nothing
             _, Done Nothing -> pure $ Done Nothing
-            Loop (Tuple maybeChunkF nextF), Loop (Tuple maybeChunkA nextA) ->
+            Loop ((maybeChunkF /\ nextF)), Loop ((maybeChunkA /\ nextA)) ->
               -- Apply chunks if both present
               case maybeChunkF, maybeChunkA of
                 Just chunkF, Just chunkA ->
-                  let
-                    applied = do
-                      f <- chunkF
-                      a <- chunkA
-                      pure (f a)
-                  in
-                    pure $ Loop $ Tuple (Just applied) (nextF <*> nextA)
-                _, _ -> pure $ Loop $ Tuple Nothing (nextF <*> nextA)
-            Loop (Tuple _ nextF), _ -> pure $ Loop $ Tuple Nothing (nextF <*> as)
-            _, Loop (Tuple _ nextA) -> pure $ Loop $ Tuple Nothing (fs <*> nextA)
+                  do
+                    let applied = do
+                          f <- chunkF
+                          a <- chunkA
+                          pure (f a)
+                    pure $ Loop $ ((Just applied) /\ (nextF <*> nextA))
+                _, _ -> pure $ Loop $ (Nothing /\ (nextF <*> nextA))
+            Loop ((_ /\ nextF)), _ -> pure $ Loop $ (Nothing /\ (nextF <*> as))
+            _, Loop ((_ /\ nextA)) -> pure $ Loop $ (Nothing /\ (fs <*> nextA))
     )
 
 instance Applicative (Strom ctx err) where
@@ -1763,19 +1747,17 @@ instance Bind (Strom ctx err) where
         case step of
           Done Nothing -> pure $ Done Nothing
           Done (Just chunk) ->
-            let
-              streams = Functor.map f chunk
-            in
+            do
+              let streams = Functor.map f chunk
               runStrom $ concatStrom streams
-          Loop (Tuple maybeChunk next) ->
+          Loop ((maybeChunk /\ next)) ->
             -- When looping, if we have a chunk, we need to process it through f and concat
             case maybeChunk of
-              Nothing -> pure $ Loop $ Tuple Nothing (next >>= f)
+              Nothing -> pure $ Loop $ (Nothing /\ (next >>= f))
               Just chunk ->
-                let
-                  streams = Functor.map f chunk
-                  prefixStream = concatStrom streams
-                in
+                do
+                  let streams = Functor.map f chunk
+                      prefixStream = concatStrom streams
                   runStrom $ appendStrom prefixStream (next >>= f)
     )
 
@@ -1786,8 +1768,8 @@ instance Semigroup (Strom ctx err a) where
     ( runStrom s1 >>= \step ->
         case step of
           Done Nothing -> runStrom s2
-          Done (Just chunk) -> pure $ Loop $ Tuple (Just chunk) s2
-          Loop (Tuple maybeChunk next) -> pure $ Loop $ Tuple maybeChunk (next <> s2)
+          Done (Just chunk) -> pure $ Loop $ ((Just chunk) /\ s2)
+          Loop ((maybeChunk /\ next)) -> pure $ Loop $ (maybeChunk /\ (next <> s2))
     )
 
 instance Monoid (Strom ctx err a) where
@@ -1798,8 +1780,8 @@ instance Alt (Strom ctx err) where
     ( runStrom s1 >>= \step ->
         case step of
           Done Nothing -> runStrom s2
-          Done (Just chunk) -> pure $ Loop $ Tuple (Just chunk) s2
-          Loop (Tuple maybeChunk next) -> pure $ Loop $ Tuple maybeChunk (next <|> s2)
+          Done (Just chunk) -> pure $ Loop $ ((Just chunk) /\ s2)
+          Loop ((maybeChunk /\ next)) -> pure $ Loop $ (maybeChunk /\ (next <|> s2))
     )
 
 instance Plus (Strom ctx err) where
