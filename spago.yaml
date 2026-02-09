@@ -3,7 +3,7 @@ workspace: {}
 package:
   name: yoga-om-strom
   publish:
-    version: 0.1.2
+    version: 0.2.0
     license: MIT-0
     exclude:
       - "src/**/*.test.purs"
@@ -39,4 +39,4 @@ package:
   test:
     main: Test.Main.Strom
     dependencies:
-      - spec: ">=7.0.0 <8.0.0"
+      - spec: ">=7.6.1 <8.0.0"
