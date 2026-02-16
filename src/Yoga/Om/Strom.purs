@@ -134,7 +134,7 @@ import Data.Time.Duration (Milliseconds(..))
 import Data.Traversable (traverse, traverse_)
 import Data.Tuple.Nested (type (/\), (/\))
 import Data.Variant (Variant)
-import Effect.Aff (Aff, Error, delay, forkAff, joinFiber, killFiber)
+import Effect.Aff (Aff, Error, delay, forkAff, killFiber)
 import Effect.Aff.AVar as AVar
 import Effect.Aff.Class (liftAff)
 import Effect.Exception as Exception
@@ -506,7 +506,7 @@ mapAccumStrom f initial stream = mapAccumHelper initial stream
       Done Nothing -> pure $ Done Nothing
       Done (Just chunk) -> do
         let
-          (finalState /\ results) = Array.foldl
+          (_ /\ results) = Array.foldl
             ( \((st /\ acc)) a ->
                 do
                   let (newSt /\ b) = f st a
@@ -575,7 +575,6 @@ takeStrom n stream = takeHelper n stream
               Nothing -> pure $ Loop $ (Nothing /\ (takeHelper remaining next))
               Just chunk -> do
                 let
-                  chunkLen = Array.length chunk
                   taken = Array.take remaining chunk
                   numTaken = Array.length taken
                   newRemaining = remaining - numTaken
@@ -758,16 +757,16 @@ groupedStrom size stream
   | size <= 0 = empty
   | otherwise = groupedHelper [] stream
       where
-      groupedHelper buffer s = mkStrom do
+      groupedHelper buf s = mkStrom do
         step <- runStrom s
         case step of
           Done Nothing ->
             -- End of stream, emit remaining buffer if non-empty
-            pure $ Done $ if Array.null buffer then Nothing else Just [ buffer ]
+            pure $ Done $ if Array.null buf then Nothing else Just [ buf ]
           Done (Just chunk) -> do
             -- Process final chunk with buffer
             let
-              combined = buffer <> chunk
+              combined = buf <> chunk
               groups = groupsOf size combined
               completeGroups = Array.dropEnd 1 groups
               lastGroup = case Array.last groups of
@@ -780,10 +779,10 @@ groupedStrom size stream
             else pure $ Done $ if Array.null (completeGroups <> [ remainder ]) then Nothing else Just (completeGroups <> [ remainder ])
           Loop ((maybeChunk /\ next)) ->
             case maybeChunk of
-              Nothing -> pure $ Loop $ (Nothing /\ (groupedHelper buffer next))
+              Nothing -> pure $ Loop $ (Nothing /\ (groupedHelper buf next))
               Just chunk -> do
                 let
-                  combined = buffer <> chunk
+                  combined = buf <> chunk
                   groups = groupsOf size combined
                   completeGroups = if Array.null groups then [] else Array.dropEnd 1 groups
                   newBuffer = case Array.last groups of
@@ -810,11 +809,11 @@ chunkedStrom = groupedStrom
 groupByStrom :: forall ctx err a k. Eq k => (a -> k) -> Strom ctx err a -> Strom ctx err (Array a)
 groupByStrom keyFn stream = groupByHelper Nothing [] stream
   where
-  groupByHelper lastKey buffer s = mkStrom do
+  groupByHelper lastKey buf s = mkStrom do
     step <- runStrom s
     case step of
       Done Nothing ->
-        pure $ Done $ if Array.null buffer then Nothing else Just [ buffer ]
+        pure $ Done $ if Array.null buf then Nothing else Just [ buf ]
       Done (Just chunk) -> do
         let
           (_ /\ result) = Array.foldl
@@ -827,7 +826,7 @@ groupByStrom keyFn stream = groupByHelper Nothing [] stream
                       if k == itemKey then ((Just itemKey) /\ { groups: acc.groups, buffer: Array.snoc acc.buffer item })
                       else ((Just itemKey) /\ { groups: Array.snoc acc.groups acc.buffer, buffer: [ item ] })
             )
-            (lastKey /\ { groups: [], buffer })
+            (lastKey /\ { groups: [], buffer: buf })
             chunk
           allGroups =
             if Array.null result.buffer then result.groups
@@ -835,7 +834,7 @@ groupByStrom keyFn stream = groupByHelper Nothing [] stream
         pure $ Done $ if Array.null allGroups then Nothing else Just allGroups
       Loop ((maybeChunk /\ next)) ->
         case maybeChunk of
-          Nothing -> pure $ Loop $ (Nothing /\ (groupByHelper lastKey buffer next))
+          Nothing -> pure $ Loop $ (Nothing /\ (groupByHelper lastKey buf next))
           Just chunk -> do
             let
               (newKey /\ result) = Array.foldl
@@ -848,7 +847,7 @@ groupByStrom keyFn stream = groupByHelper Nothing [] stream
                           if k == itemKey then ((Just itemKey) /\ { groups: acc.groups, buffer: Array.snoc acc.buffer item })
                           else ((Just itemKey) /\ { groups: Array.snoc acc.groups acc.buffer, buffer: [ item ] })
                 )
-                (lastKey /\ { groups: [], buffer })
+                (lastKey /\ { groups: [], buffer: buf })
                 chunk
             if Array.null result.groups then pure $ Loop $ (Nothing /\ (groupByHelper newKey result.buffer next))
             else pure $ Loop $ ((Just result.groups) /\ (groupByHelper newKey result.buffer next))
@@ -906,7 +905,7 @@ throttle (Milliseconds duration) stream = throttleWithState 0.0 stream
     case step of
       Done Nothing -> pure $ Done Nothing
       Done (Just chunk) -> do
-        (newLastEmit /\ filtered) <- filterByTime lastEmit chunk
+        (_ /\ filtered) <- filterByTime lastEmit chunk
         pure $ Done $ if Array.null filtered then Nothing else Just filtered
       Loop ((maybeChunk /\ next)) -> do
         case maybeChunk of
@@ -1394,7 +1393,7 @@ mergeNDWithStrategy bufferCapacity strategy stream1 stream2 = mkStrom do
       let
         producer s = do
           stepResult <- Om.runReader ctx (runStrom s)
-          step <- either (\e -> throwError (Exception.error "Stream error")) pure stepResult
+          step <- either (\_ -> throwError (Exception.error "Stream error")) pure stepResult
           case step of
             Done Nothing ->
               enqueue (StreamDone StreamId1)
@@ -1413,7 +1412,7 @@ mergeNDWithStrategy bufferCapacity strategy stream1 stream2 = mkStrom do
       let
         producer s = do
           stepResult <- Om.runReader ctx (runStrom s)
-          step <- either (\e -> throwError (Exception.error "Stream error")) pure stepResult
+          step <- either (\_ -> throwError (Exception.error "Stream error")) pure stepResult
           case step of
             Done Nothing ->
               enqueue (StreamDone StreamId2)

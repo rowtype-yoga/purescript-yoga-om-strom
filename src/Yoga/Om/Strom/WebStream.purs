@@ -174,7 +174,7 @@ stromToReadableStream cleanup ctx strom = do
         Nothing -> pure unit
         Just fiber ->
           void $ launchAff $ killFiber (Exception.error "cancelled") fiber
-      currentStrom <- Ref.read stromRef
+      _currentStrom <- Ref.read stromRef
       pure unit -- TODO: cancelStrom currentStrom
       cleanup
 
@@ -295,7 +295,7 @@ pipeThrough ctx transform readable = do
 -- | Internal: pull from a Reader in batches with configurable chunk size,
 -- | calling a cleanup action on stream completion.
 readerToStromWithCleanupAndSize :: forall a ctx err. Int -> Effect Unit -> Reader a -> Strom ctx err a
-readerToStromWithCleanupAndSize batchSize cleanup reader = go -- TODO: addCancel cleanup go
+readerToStromWithCleanupAndSize batchSize _cleanup reader = go -- TODO: addCancel cleanup go
   where
   go :: Strom ctx err a
   go = mkStrom do

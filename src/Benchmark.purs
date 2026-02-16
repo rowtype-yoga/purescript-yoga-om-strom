@@ -10,10 +10,9 @@ import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.Aff (Aff, launchAff_, throwError)
 import Effect.Class (liftEffect)
-import Effect.Exception (Error)
 import Effect.Class.Console as Console
 import Effect.Now (now)
-import Data.DateTime.Instant (unInstant, diff)
+import Data.DateTime.Instant (diff)
 import Yoga.Om as Om
 import Yoga.Om.Strom as Strom
 

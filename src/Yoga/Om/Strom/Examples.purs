@@ -106,7 +106,7 @@ example4b = do
 example5 :: Om {} () (Array (Tuple Int String))
 example5 = do
   let numbers = Strom.rangeStrom 1 5
-  let letters = Strom.fromArray ["a", "b", "c", "d", "e"]
+  let _letters = Strom.fromArray ["a", "b", "c", "d", "e"]
   -- TODO: zipStrom not yet implemented
   numbers # Strom.mapStrom (\n -> Tuple n "stub") # Strom.runCollect
 
@@ -288,11 +288,11 @@ example11 = do
         Om.delay (Milliseconds 100.0)
         pure 1
       
-      source2 = Strom.fromOm do
+      _source2 = Strom.fromOm do
         Om.delay (Milliseconds 50.0)  -- This will win
         pure 2
       
-      source3 = Strom.fromOm do
+      _source3 = Strom.fromOm do
         Om.delay (Milliseconds 200.0)
         pure 3
   

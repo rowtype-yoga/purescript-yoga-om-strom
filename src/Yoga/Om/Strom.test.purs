@@ -10,9 +10,9 @@ import Data.Time.Duration (Milliseconds(..))
 import Effect.Aff (Aff)
 import Effect.Ref as Ref
 import Effect.Class (liftEffect)
-import Effect.Exception (throwException, error)
+import Effect.Exception (throwException)
 import Test.Spec (Spec, describe, it)
-import Test.Spec.Assertions (shouldEqual, fail)
+import Test.Spec.Assertions (shouldEqual)
 import Yoga.Om (Om)
 import Yoga.Om as Om
 import Yoga.Om.Strom as Strom
@@ -172,7 +172,7 @@ spec = do
         result `shouldEqual` [ "1a", "2b", "3c" ]
 
       it "tap observes without modifying" do
-        sideEffectRef <- liftEffect $ Ref.new 0
+        _sideEffectRef <- liftEffect $ Ref.new 0
         result <- runOm $
           Strom.fromArray [ 1, 2, 3 ]
             # Strom.tapStrom (\n -> let _ = n in unit) -- Pure observation
