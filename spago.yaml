@@ -1,16 +1,13 @@
 workspace:
   packageSet:
-    registry: 73.0.0
+    registry: 73.2.0
   extraPackages:
-    ref-lifted:
-      path: ../purescript-ref-lifted
-    yoga-om:
-      path: ../purescript-yoga-om
+    yoga-om: "1.5.1"
 
 package:
   name: yoga-om-strom
   publish:
-    version: 0.4.0
+    version: 0.4.1
     license: MIT-0
     exclude:
       - "src/**/*.test.purs"
@@ -35,7 +32,6 @@ package:
     - maybe: ">=6.0.0 <7.0.0"
     - now: ">=6.0.0 <7.0.0"
     - prelude: ">=6.0.2 <7.0.0"
-    - ref-lifted: ">=0.0.1 <1.0.0"
     - refs: ">=6.0.0 <7.0.0"
     - spec: ">=8.1.1 <9.0.0"
     - st: ">=6.2.0 <7.0.0"
