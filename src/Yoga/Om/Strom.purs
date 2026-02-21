@@ -65,6 +65,7 @@ module Yoga.Om.Strom
   , partitionMap
   -- Timing
   , debounce
+  , debounceEach
   , throttle
   , delayStrom
   -- Combining
@@ -138,12 +139,10 @@ import Effect.Aff (Aff, Error, delay, forkAff, killFiber)
 import Effect.Aff.AVar as AVar
 import Effect.Aff.Class (liftAff)
 import Effect.Exception as Exception
-import Effect.Now (now)
 import Effect.Ref as Ref
 import Effect.Class (liftEffect)
 import Data.CatQueue as CatQueue
 import Data.CatQueue (CatQueue)
-import Data.DateTime.Instant (unInstant)
 import Yoga.Om (Om)
 import Yoga.Om as Om
 
@@ -460,7 +459,7 @@ tapMStrom f stream = mkStrom do
 bindStrom :: forall ctx err a b. (a -> Strom ctx err b) -> Strom ctx err a -> Strom ctx err b
 bindStrom f stream = stream >>= f
 
--- | Scan with accumulator (like foldl but emits intermediate results)  
+-- | Scan with accumulator (like foldl but emits intermediate results)
 scanStrom :: forall ctx err a b. (b -> a -> b) -> b -> Strom ctx err a -> Strom ctx err b
 scanStrom f initial stream = scanHelper initial stream
   where
@@ -687,11 +686,12 @@ collectStrom f stream = mkStrom do
       pure $ Done $ if Array.null collected then Nothing else Just collected
     Loop ((maybeChunk /\ next)) ->
       do
-        let collected = case maybeChunk of
-              Nothing -> Nothing
-              Just chunk -> do
-                let c = Array.mapMaybe f chunk
-                if Array.null c then Nothing else Just c
+        let
+          collected = case maybeChunk of
+            Nothing -> Nothing
+            Just chunk -> do
+              let c = Array.mapMaybe f chunk
+              if Array.null c then Nothing else Just c
 
         pure $ Loop $ (collected /\ (collectStrom f next))
 
@@ -714,7 +714,7 @@ collectMStrom f stream = mkStrom do
           pure $ if Array.null c then Nothing else Just c
       pure $ Loop $ (collected /\ (collectMStrom f next))
 
--- | Remove consecutive duplicates  
+-- | Remove consecutive duplicates
 changesStrom :: forall ctx err a. Eq a => Strom ctx err a -> Strom ctx err a
 changesStrom stream = changesHelper Nothing stream
   where
@@ -796,8 +796,9 @@ groupedStrom size stream
         | n <= 0 || Array.null arr = []
         | otherwise =
             do
-              let group = Array.take n arr
-                  rest = Array.drop n arr
+              let
+                group = Array.take n arr
+                rest = Array.drop n arr
               if Array.null group then [] else Array.cons group (groupsOf n rest)
 
 -- | Alias for groupedStrom
@@ -864,12 +865,13 @@ partition predicate stream =
 partitionMap :: forall ctx err a b c. (a -> Either b c) -> Strom ctx err a -> ((Strom ctx err b) /\ (Strom ctx err c))
 partitionMap f stream =
   do
-    let leftOnly x = case f x of
-          Left b -> Just b
-          Right _ -> Nothing
-        rightOnly x = case f x of
-          Left _ -> Nothing
-          Right c -> Just c
+    let
+      leftOnly x = case f x of
+        Left b -> Just b
+        Right _ -> Nothing
+      rightOnly x = case f x of
+        Left _ -> Nothing
+        Right c -> Just c
     (collectStrom leftOnly stream)
       /\ (collectStrom rightOnly stream)
 
@@ -887,49 +889,24 @@ debounce duration stream = mkStrom do
     Done (Just chunk) -> do
       Om.delay duration
       pure $ Done $ Just chunk
-    Loop ((maybeChunk /\ next)) -> do
+    Loop (maybeChunk /\ next) -> do
       case maybeChunk of
         Nothing -> pure $ Loop $ (Nothing /\ (debounce duration next))
         Just chunk -> do
           Om.delay duration
           pure $ Loop $ ((Just chunk) /\ (debounce duration next))
 
--- | Throttle a stream - emit at most once per duration period
--- | Tracks last emission time and skips elements that arrive too quickly
--- | Note: Uses wall-clock time, not processing time
-throttle :: forall ctx err a. Milliseconds -> Strom ctx err a -> Strom ctx err a
-throttle (Milliseconds duration) stream = throttleWithState 0.0 stream
-  where
-  throttleWithState lastEmit s = mkStrom do
-    step <- runStrom s
-    case step of
-      Done Nothing -> pure $ Done Nothing
-      Done (Just chunk) -> do
-        (_ /\ filtered) <- filterByTime lastEmit chunk
-        pure $ Done $ if Array.null filtered then Nothing else Just filtered
-      Loop ((maybeChunk /\ next)) -> do
-        case maybeChunk of
-          Nothing -> pure $ Loop $ (Nothing /\ (throttleWithState lastEmit next))
-          Just chunk -> do
-            (newLastEmit /\ filtered) <- filterByTime lastEmit chunk
-            if Array.null filtered then pure $ Loop $ (Nothing /\ (throttleWithState newLastEmit next))
-            else pure $ Loop $ ((Just filtered) /\ (throttleWithState newLastEmit next))
+-- | Debounce a stream per element - adds a delay after each individual element
+debounceEach :: forall ctx err a. Milliseconds -> Strom ctx err a -> Strom ctx err a
+debounceEach duration stream = stream # bindStrom \a -> mkStrom do
+  Om.delay duration
+  pure $ Done $ Just [ a ]
 
-  filterByTime lastEmit chunk = do
-    (newLastEmit /\ results) <- Array.foldl
-      ( \acc value -> do
-          (currentLast /\ filtered) <- acc
-          currentTime <- liftEffect now
-          let Milliseconds currentMillis = unInstant currentTime
-          let elapsed = currentMillis - currentLast
-          if elapsed >= duration then
-            pure $ (currentMillis /\ (Array.snoc filtered value))
-          else
-            pure $ (currentLast /\ filtered)
-      )
-      (pure $ (lastEmit /\ []))
-      chunk
-    pure $ (newLastEmit /\ results)
+-- | Throttle a stream - emits at most one element per duration period
+throttle :: forall ctx err a. Milliseconds -> Strom ctx err a -> Strom ctx err a
+throttle duration stream = stream # bindStrom \a -> mkStrom do
+  Om.delay duration
+  pure $ Done $ Just [ a ]
 
 -- | Delay each element by a duration
 delayStrom :: forall ctx err a. Milliseconds -> Strom ctx err a -> Strom ctx err a
@@ -1010,20 +987,20 @@ traverseMStrom_ = traverseStrom_
 --------------------------------------------------------------------------------
 
 -- | Run a stream in the background, returning a Fiber that can be cancelled
--- | 
+-- |
 -- | To use cancellable streams, convert your stream to Om and use Om.launchOm:
--- | 
+-- |
 -- | Example:
 -- | ```purescript
 -- | fiber <- Om.launchOm ctx handlers (Strom.runCollect myStream)
 -- | -- ... later ...
 -- | killFiber (error "Cancelled") fiber
 -- | ```
--- | 
+-- |
 -- | Or for subscription-style:
 -- | ```purescript
 -- | fiber <- Om.launchOm ctx handlers (Strom.traverseStrom_ callback myStream)
--- | -- ... later ...  
+-- | -- ... later ...
 -- | killFiber (error "Unsubscribed") fiber
 -- | ```
 -- |
@@ -1568,8 +1545,9 @@ mapPar concurrency f stream
         | n <= 0 || Array.null arr = []
         | otherwise =
             do
-              let group = Array.take n arr
-                  rest = Array.drop n arr
+              let
+                group = Array.take n arr
+                rest = Array.drop n arr
               if Array.null group then [] else Array.cons group (chunksOf n rest)
 
 -- | Unordered parallel map (currently same as mapPar)
@@ -1715,10 +1693,11 @@ instance Apply (Strom ctx err) where
           case stepF, stepA of
             Done (Just funcs), Done (Just vals) ->
               do
-                let results = do
-                      f <- funcs
-                      a <- vals
-                      pure (f a)
+                let
+                  results = do
+                    f <- funcs
+                    a <- vals
+                    pure (f a)
                 pure $ Done $ Just results
             Done Nothing, _ -> pure $ Done Nothing
             _, Done Nothing -> pure $ Done Nothing
@@ -1727,10 +1706,11 @@ instance Apply (Strom ctx err) where
               case maybeChunkF, maybeChunkA of
                 Just chunkF, Just chunkA ->
                   do
-                    let applied = do
-                          f <- chunkF
-                          a <- chunkA
-                          pure (f a)
+                    let
+                      applied = do
+                        f <- chunkF
+                        a <- chunkA
+                        pure (f a)
                     pure $ Loop $ ((Just applied) /\ (nextF <*> nextA))
                 _, _ -> pure $ Loop $ (Nothing /\ (nextF <*> nextA))
             Loop ((_ /\ nextF)), _ -> pure $ Loop $ (Nothing /\ (nextF <*> as))
@@ -1755,8 +1735,9 @@ instance Bind (Strom ctx err) where
               Nothing -> pure $ Loop $ (Nothing /\ (next >>= f))
               Just chunk ->
                 do
-                  let streams = Functor.map f chunk
-                      prefixStream = concatStrom streams
+                  let
+                    streams = Functor.map f chunk
+                    prefixStream = concatStrom streams
                   runStrom $ appendStrom prefixStream (next >>= f)
     )
 
