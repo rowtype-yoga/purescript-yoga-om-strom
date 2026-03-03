@@ -1,13 +1,8 @@
-workspace:
-  packageSet:
-    registry: 73.2.0
-  extraPackages:
-    yoga-om: "1.5.1"
-
+workspace: {}
 package:
   name: yoga-om-strom
   publish:
-    version: 0.4.1
+    version: 0.4.2
     license: MIT-0
     exclude:
       - "src/**/*.test.purs"
