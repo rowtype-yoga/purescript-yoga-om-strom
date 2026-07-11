@@ -6,7 +6,7 @@
         "core": {
           "dependencies": [
             {
-              "aff": ">=7.1.0 <8.0.0"
+              "aff": ">=8.0.0 <9.0.0"
             },
             {
               "arrays": ">=7.3.0 <8.0.0"
@@ -57,7 +57,7 @@
               "refs": ">=6.0.0 <7.0.0"
             },
             {
-              "spec": ">=8.1.1 <9.0.0"
+              "spec": ">=8.1.2 <9.0.0"
             },
             {
               "st": ">=6.2.0 <7.0.0"
@@ -96,8 +96,8 @@
   "packages": {
     "aff": {
       "type": "registry",
-      "version": "7.1.0",
-      "integrity": "sha256-/nOpDQVnKIoP1pQ1ZZBYpadK0TuMlG4WwufGzJpsfD0=",
+      "version": "8.0.0",
+      "integrity": "sha256-9BRIrSdRoYybfiUmBqgKJ66cPqxYHb277bVWQMn/9sg=",
       "dependencies": [
         "control",
         "datetime",
@@ -1001,8 +1001,8 @@
     },
     "spec": {
       "type": "registry",
-      "version": "8.1.1",
-      "integrity": "sha256-b6qjDb7lUJGLV+WEoywLu6BCXC4zGpfbN43mTL+vBeI=",
+      "version": "8.1.2",
+      "integrity": "sha256-klPPJ6lBQI1CGOAdLJ+ZoGRt8XZippkTKjn53BrSkL0=",
       "dependencies": [
         "aff",
         "ansi",

@@ -2,7 +2,7 @@ workspace: {}
 package:
   name: yoga-om-strom
   publish:
-    version: 0.4.2
+    version: 0.4.3
     license: MIT-0
     exclude:
       - "src/**/*.test.purs"
@@ -11,7 +11,7 @@ package:
       githubOwner: rowtype-yoga
       githubRepo: purescript-yoga-om-strom
   dependencies:
-    - aff: ">=7.1.0 <8.0.0"
+    - aff: ">=8.0.0 <9.0.0"
     - arrays: ">=7.3.0 <8.0.0"
     - avar: ">=5.0.1 <6.0.0"
     - catenable-lists: ">=7.0.0 <8.0.0"
@@ -28,7 +28,7 @@ package:
     - now: ">=6.0.0 <7.0.0"
     - prelude: ">=6.0.2 <7.0.0"
     - refs: ">=6.0.0 <7.0.0"
-    - spec: ">=8.1.1 <9.0.0"
+    - spec: ">=8.1.2 <9.0.0"
     - st: ">=6.2.0 <7.0.0"
     - tailrec: ">=6.1.0 <7.0.0"
     - transformers: ">=6.1.0 <7.0.0"
